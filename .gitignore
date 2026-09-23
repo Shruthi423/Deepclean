@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Secrets: never commit
+.env
+
+# Never commit real session files
+*.jsonl
