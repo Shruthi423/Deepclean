@@ -7,10 +7,12 @@ Run after exiting Claude Code:
 
 import argparse
 import json
+import os
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
-from deepclean import session
+from deepclean import __version__, session
 from deepclean.analysis import analyze
 from deepclean.cleaner import CleanError, clean
 from deepclean.turns import split_turns
@@ -25,6 +27,7 @@ FINDING_LABELS = {
     "large_tool_output": "large tool output",
     "duplicate_tool_output": "duplicate tool output",
     "correction_marker": "possible correction loop",
+    "near_duplicate_user_text": "possible re-explanation",
 }
 
 
@@ -100,11 +103,21 @@ def file_size(entries):
     return sum(len(json.dumps(e, ensure_ascii=False)) + 1 for e in entries)
 
 
+def resume_command(folder, session_id):
+    """Return a shell-appropriate command for resuming the cleaned session."""
+    if not folder:
+        return f"claude --resume {session_id}"
+    if os.name == "nt":
+        return f'cd /d "{folder}" && claude --resume {session_id}'
+    return f"cd {shlex.quote(str(folder))} && claude --resume {session_id}"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="deepclean",
         description="Review and archive parts of a Claude Code session into a cleaned copy. The original is never changed.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("path", nargs="?", help="Path to a session .jsonl file")
     parser.add_argument("--latest", action="store_true", help="Use the most recent session")
     parser.add_argument("--protect", type=int, default=DEFAULT_PROTECT,
@@ -196,9 +209,9 @@ def main(argv=None):
     folder = session.working_folder(entries)
     print("\nDone. Your original session is untouched.")
     print("Continue in the cleaned copy with:")
-    if folder:
-        print(f'  cd "{folder}" && claude --resume {new_id}')
-    else:
-        print(f"  claude --resume {new_id}   (run this from the project's folder)")
+    command = resume_command(folder, new_id)
+    print(f"  {command}")
+    if not folder:
+        print("  (run this from the project's folder)")
     print("To undo, simply resume the original session instead.")
     return 0
