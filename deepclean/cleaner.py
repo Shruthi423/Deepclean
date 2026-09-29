@@ -105,6 +105,9 @@ def check_tool_pairs(entries):
                     raise CleanError("A tool result would be left without its tool call.")
                 open_calls.discard(call_id)
 
+    if open_calls:
+        raise CleanError("A tool call at the end of the session has no result.")
+
 
 def clean(entries, turns, archive_numbers, protect_last, new_session_id=None):
     """
