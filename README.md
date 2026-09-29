@@ -6,9 +6,7 @@ When a Claude Code session runs for a long time, it fills up with side
 conversations, old drafts, and finished tasks. Claude has to reread all of it
 with every message, and answers can get less focused.
 
-Deep Clean lets you pick which parts of a session to set aside. You then
-continue in a cleaned copy of the session. Your original session is never
-changed, so you can always go back.
+Deep Clean first reviews the session for conservative context signals, then lets you decide which parts to set aside. It can flag repeated requirements, lightweight exchanges, large or duplicate tool output, and explicit correction-loop language. You then continue in a cleaned copy of the session. Your original session is never changed, so you can always go back.
 
 > **Status: early version.** It works and has been tested, but it relies on
 > Claude Code's session files, whose format is not officially documented.
@@ -19,12 +17,11 @@ changed, so you can always go back.
 ## How it works, in one minute
 
 1. You end a Claude Code session as usual.
-2. You run Deep Clean. It shows your session as a numbered list of **turns**.
-   A turn is one message you sent, plus everything Claude did in response.
-3. You type the numbers of the turns you no longer need.
-4. Deep Clean makes a **cleaned copy** of the session without those turns. In
-   their place it leaves a short note, so Claude knows something was there.
-5. You continue working in the cleaned copy.
+2. You run Deep Clean. It analyzes the session and surfaces **review signals**. Strong signals are mechanical, such as duplicate tool output. Possible signals are weaker clues, such as correction-loop language.
+3. Deep Clean then shows the session as numbered **turns**. A turn is one message you sent, plus everything Claude did in response.
+4. You choose which turns, if any, to set aside. Deep Clean never selects them for you.
+5. Deep Clean makes a **cleaned copy** without those turns. In their place it leaves a short note, so Claude knows something was there.
+6. You continue working in the cleaned copy.
 
 🔒 Nothing is deleted. Your original session stays exactly as it was.
 
@@ -127,6 +124,8 @@ It is untouched. Deep Clean also keeps a record of every clean in
 | `python3 -m deepclean --latest` | Clean the most recently used session. ⚠️ **Careful:** this may pick a different session than you expect |
 | `--protect 5` | Protect the last 5 turns instead of the default 2 |
 | `--dry-run` | Show what would happen without writing anything |
+| `--analyze-only` | Show context review signals and exit without asking what to archive |
+| `--no-analysis` | Skip the advisory context analysis and use the original manual flow |
 
 ---
 
@@ -169,8 +168,12 @@ Deep Clean is plain Python with no outside packages. Each file has one job:
 |---|---|
 | `deepclean/session.py` | Reads session files, checks they look right, and saves the cleaned copy safely (never overwriting anything) |
 | `deepclean/turns.py` | Splits a session into turns: each message you sent plus Claude's response |
-| `deepclean/cleaner.py` | Builds the cleaned copy: removes chosen turns, adds the notes, and enforces the safety rules |
-| `deepclean/cli.py` | The interactive part you see in Terminal: shows turns, asks questions, prints the resume command |
+| `deepclean/model.py` | Converts Claude session data into Deep Clean's internal, vendor-neutral session model |
+| `deepclean/context_graph.py` | Builds structural relationships between turns, tool calls, and tool results |
+| `deepclean/findings.py` | Defines review findings and confidence levels |
+| `deepclean/analysis.py` | Runs conservative, non-destructive context detectors |
+| `deepclean/cleaner.py` | Builds the cleaned copy: removes only user-approved turns, adds notes, and enforces safety rules |
+| `deepclean/cli.py` | Shows review signals, asks for user decisions, and prints the resume command |
 | `tests/test_cleaner.py` | Automated tests, one or more for each safety rule |
 | `tools/inspect_session.py` | A read-only helper that shows what's inside a session file, for debugging |
 
@@ -185,11 +188,28 @@ You should see `OK` at the end.
 
 ---
 
+## Current analysis
+
+Deep Clean currently uses deterministic, conservative detectors. It does **not** use an LLM to decide what should be removed.
+
+It can currently flag:
+
+- exact repeated substantive user requirements
+- lightweight acknowledgement exchanges with no tool activity
+- large tool-result payloads
+- duplicate non-trivial tool results
+- explicit correction-loop phrases such as `I already said`
+
+These are review signals only. The user remains the authority on what gets archived.
+
 ## Coming next
 
-- Run `/deepclean` from inside Claude Code, so it always cleans the session
-  you're in
-- Pin up to 5 important messages so they're never set aside
-- Restore set-aside turns from inside a session
-- Measure what Claude actually reads, not just file size
-- Gentle suggestions when a session is getting long or drifting off topic
+- semantic re-explanation detection for differently worded repeats
+- superseded and conflicting decisions
+- source-of-truth pinning and a project-state manifest
+- stale-file and file-version detection
+- semantic context-graph relationships such as `supersedes`, `contradicts`, and `resolves`
+- Codex session adapter
+- run `/deepclean` from inside Claude Code
+- restore set-aside turns from inside a session
+- measure what the model actually reads, not just file size
