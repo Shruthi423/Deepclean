@@ -6,27 +6,11 @@ person decide what may no longer deserve active context.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from dataclasses import dataclass
-from typing import Iterable
 
-from deepclean.turns import Turn, message_text
-
-
-@dataclass(frozen=True)
-class Finding:
-    """One reason a turn or group of turns deserves human review."""
-
-    kind: str
-    turns: tuple[int, ...]
-    title: str
-    detail: str
-    confidence: float
-    suggested_action: str = "review"
-    mechanical: bool = True
-
+from deepclean.context_graph import build_context_graph
+from deepclean.findings import Finding
+from deepclean.model import NormalizedSession, normalize
 
 ACKNOWLEDGEMENTS = {
     "thanks",
@@ -41,6 +25,16 @@ ACKNOWLEDGEMENTS = {
     "perfect",
 }
 
+CORRECTION_MARKERS = (
+    "i already said",
+    "i told you",
+    "again",
+    "for the third time",
+    "no, i meant",
+    "that's not what i meant",
+    "that is not what i meant",
+)
+
 
 def _normalize(text: str) -> str:
     text = text.casefold().strip()
@@ -48,49 +42,16 @@ def _normalize(text: str) -> str:
     return text
 
 
-def _blocks(entry):
-    content = entry.get("message", {}).get("content")
-    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-
-
-def _turn_entries(entries, turn: Turn):
-    return entries[turn.start : turn.end]
-
-
-def _assistant_text(entries, turn: Turn) -> str:
-    return " ".join(
-        message_text(entry)
-        for entry in _turn_entries(entries, turn)
-        if entry.get("type") == "assistant"
-    ).strip()
-
-
-def _has_tool_activity(entries, turn: Turn) -> bool:
-    for entry in _turn_entries(entries, turn):
-        for block in _blocks(entry):
-            if block.get("type") in {"tool_use", "tool_result"}:
-                return True
-    return False
-
-
-def _tool_result_payloads(entries, turn: Turn):
-    for entry in _turn_entries(entries, turn):
-        for block in _blocks(entry):
-            if block.get("type") == "tool_result":
-                yield block.get("content")
-
-
-def detect_lightweight_acknowledgements(entries, turns: Iterable[Turn]):
+def detect_lightweight_acknowledgements(session: NormalizedSession):
     """Find tiny courtesy exchanges, never bare yes/no decisions."""
     findings = []
-    for turn in turns:
-        user_text = _normalize(message_text(entries[turn.start]))
+    for turn in session.turns:
+        user_text = _normalize(turn.user_text)
         if user_text not in ACKNOWLEDGEMENTS:
             continue
-        if _has_tool_activity(entries, turn):
+        if turn.has_tool_activity:
             continue
-        assistant_text = _assistant_text(entries, turn)
-        if len(assistant_text) > 240:
+        if len(turn.assistant_text) > 240:
             continue
         findings.append(
             Finding(
@@ -104,11 +65,11 @@ def detect_lightweight_acknowledgements(entries, turns: Iterable[Turn]):
     return findings
 
 
-def detect_repeated_user_text(entries, turns: Iterable[Turn]):
+def detect_repeated_user_text(session: NormalizedSession):
     """Find exact repeated substantive prompts, a cheap signal of re-explanation."""
     groups = {}
-    for turn in turns:
-        text = _normalize(message_text(entries[turn.start]))
+    for turn in session.turns:
+        text = _normalize(turn.user_text)
         if len(text) < 24:
             continue
         groups.setdefault(text, []).append(turn.number)
@@ -129,13 +90,32 @@ def detect_repeated_user_text(entries, turns: Iterable[Turn]):
     return findings
 
 
-def detect_large_tool_results(entries, turns: Iterable[Turn], threshold=4000):
+def detect_correction_markers(session: NormalizedSession):
+    """Find explicit language that often signals context loss or correction loops."""
+    findings = []
+    for turn in session.turns:
+        text = _normalize(turn.user_text)
+        matched = next((marker for marker in CORRECTION_MARKERS if marker in text), None)
+        if not matched:
+            continue
+        findings.append(
+            Finding(
+                kind="correction_marker",
+                turns=(turn.number,),
+                title="Possible correction loop",
+                detail=f'The user used "{matched}", which can indicate the model lost or distorted earlier context.',
+                confidence=0.85,
+                mechanical=False,
+            )
+        )
+    return findings
+
+
+def detect_large_tool_results(session: NormalizedSession, threshold=4000):
     """Find turns dominated by large tool-result payloads."""
     findings = []
-    for turn in turns:
-        size = 0
-        for payload in _tool_result_payloads(entries, turn):
-            size += len(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    for turn in session.turns:
+        size = sum(result.char_count for result in turn.tool_results)
         if size < threshold:
             continue
         findings.append(
@@ -150,28 +130,25 @@ def detect_large_tool_results(entries, turns: Iterable[Turn], threshold=4000):
     return findings
 
 
-def detect_duplicate_tool_results(entries, turns: Iterable[Turn], min_size=200):
+def detect_duplicate_tool_results(session: NormalizedSession, min_size=200):
     """Find identical non-trivial tool results repeated across different turns."""
     seen = {}
     groups = {}
-    for turn in turns:
-        for payload in _tool_result_payloads(entries, turn):
-            raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-            if len(raw) < min_size:
+    for turn in session.turns:
+        for result in turn.tool_results:
+            if result.char_count < min_size:
                 continue
-            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            if digest in seen:
-                groups.setdefault(digest, {seen[digest]}).add(turn.number)
+            if result.digest in seen:
+                groups.setdefault(result.digest, {seen[result.digest]}).add(turn.number)
             else:
-                seen[digest] = turn.number
+                seen[result.digest] = turn.number
 
     findings = []
     for numbers in groups.values():
-        ordered = tuple(sorted(numbers))
         findings.append(
             Finding(
                 kind="duplicate_tool_output",
-                turns=ordered,
+                turns=tuple(sorted(numbers)),
                 title="Duplicate tool output",
                 detail="Identical non-trivial tool-result content appears in multiple turns.",
                 confidence=1.0,
@@ -181,14 +158,20 @@ def detect_duplicate_tool_results(entries, turns: Iterable[Turn], min_size=200):
 
 
 def analyze(entries, turns):
-    """Run cheap deterministic detectors. No session content is modified."""
+    """Run conservative detectors over Deep Clean's normalized session model."""
+    session = normalize(entries, turns)
+    build_context_graph(session)  # Build once now; semantic relations can extend it later.
+
     detectors = (
         detect_lightweight_acknowledgements,
         detect_repeated_user_text,
+        detect_correction_markers,
         detect_large_tool_results,
         detect_duplicate_tool_results,
     )
+
     findings = []
     for detector in detectors:
-        findings.extend(detector(entries, turns))
+        findings.extend(detector(session))
+
     return sorted(findings, key=lambda f: (min(f.turns), f.kind))
