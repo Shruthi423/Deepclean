@@ -44,7 +44,7 @@ class AnalysisTests(unittest.TestCase):
     def test_near_duplicate_rewording_is_flagged_as_possible(self):
         entries, turns = make_turns([
             ("Keep the settings panel fixed on the right side of the canvas.", "Done", None),
-            ("Keep the settings panel fixed on the canvas right side.", "Done", None),
+            ("Keep the settings panel fixed on the right side of this canvas.", "Done", None),
         ])
         finding = next(f for f in analyze(entries, turns) if f.kind == "near_duplicate_user_text")
         self.assertEqual(finding.review_level, "possible")
