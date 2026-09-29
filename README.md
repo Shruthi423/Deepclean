@@ -8,7 +8,7 @@ with every message, and answers can get less focused.
 
 Deep Clean first reviews the session for conservative context signals, then lets you decide which parts to set aside. It can flag repeated requirements, lightweight exchanges, large or duplicate tool output, and explicit correction-loop language. You then continue in a cleaned copy of the session. Your original session is never changed, so you can always go back.
 
-> **Status: early version.** It works and has been tested, but it relies on
+> **Status: beta.** It works and is covered by automated tests, but it relies on
 > Claude Code's session files, whose format is not officially documented.
 > Your original sessions are never modified, so trying it is safe.
 
@@ -31,7 +31,7 @@ Deep Clean first reviews the session for conservative context signals, then lets
 
 You need:
 
-- A Mac or Linux computer
+- macOS, Linux, or Windows
 - **Claude Code**, installed and working
 - **Python 3.10 or newer.** To check, open Terminal and run `python3 --version`
 
@@ -42,15 +42,15 @@ Claude Code keeps using your normal Claude plan.
 
 ## Install
 
-Open Terminal and run:
+Open a terminal and run:
 
 ```bash
-cd ~
 git clone https://github.com/Shruthi423/Deepclean.git
 cd Deepclean
+python -m pip install .
 ```
 
-That's it. There is nothing else to install.
+After that, you can run Deep Clean with the `deepclean` command.
 
 ---
 
@@ -69,12 +69,22 @@ The long code at the end is your **session ID**. Copy it.
 
 ### Step 2: Run Deep Clean on that session
 
-In Terminal, go to the Deep Clean folder and run this command, replacing
-`YOUR-SESSION-ID` with the ID you copied:
+The simplest option is to analyze the most recent Claude Code session:
 
 ```bash
-cd ~/Deepclean
-python3 -m deepclean "$(find ~/.claude/projects -name 'YOUR-SESSION-ID.jsonl')"
+deepclean --latest
+```
+
+For a specific session, pass its JSONL file path:
+
+```bash
+deepclean PATH_TO_SESSION.jsonl
+```
+
+To inspect findings without cleaning anything:
+
+```bash
+deepclean PATH_TO_SESSION.jsonl --analyze-only
 ```
 
 ### Step 3: Choose what to set aside
@@ -120,12 +130,13 @@ It is untouched. Deep Clean also keeps a record of every clean in
 
 | Command | What it does |
 |---|---|
-| `python3 -m deepclean PATH` | Clean the session file at PATH (recommended) |
-| `python3 -m deepclean --latest` | Clean the most recently used session. ⚠️ **Careful:** this may pick a different session than you expect |
+| `deepclean PATH` | Analyze and clean the session file at PATH |
+| `deepclean --latest` | Analyze and clean the most recently used session. ⚠️ **Careful:** this may pick a different session than you expect |
 | `--protect 5` | Protect the last 5 turns instead of the default 2 |
 | `--dry-run` | Show what would happen without writing anything |
 | `--analyze-only` | Show context review signals and exit without asking what to archive |
 | `--no-analysis` | Skip the advisory context analysis and use the original manual flow |
+| `--version` | Print the installed Deep Clean version |
 
 ---
 
@@ -180,8 +191,7 @@ Deep Clean is plain Python with no outside packages. Each file has one job:
 ### Run the tests
 
 ```bash
-cd ~/Deepclean
-python3 -m unittest discover tests
+python -m unittest discover -s tests -v
 ```
 
 You should see `OK` at the end.
@@ -195,6 +205,7 @@ Deep Clean currently uses deterministic, conservative detectors. It does **not**
 It can currently flag:
 
 - exact repeated substantive user requirements
+- highly similar reworded requirements as a possible re-explanation signal
 - lightweight acknowledgement exchanges with no tool activity
 - large tool-result payloads
 - duplicate non-trivial tool results
@@ -204,7 +215,7 @@ These are review signals only. The user remains the authority on what gets archi
 
 ## Coming next
 
-- semantic re-explanation detection for differently worded repeats
+- richer semantic re-explanation detection beyond textual similarity
 - superseded and conflicting decisions
 - source-of-truth pinning and a project-state manifest
 - stale-file and file-version detection
