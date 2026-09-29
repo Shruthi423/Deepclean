@@ -24,6 +24,7 @@ FINDING_LABELS = {
     "repeated_user_text": "repeated requirement",
     "large_tool_output": "large tool output",
     "duplicate_tool_output": "duplicate tool output",
+    "correction_marker": "possible correction loop",
 }
 
 
@@ -43,13 +44,20 @@ def show_findings(findings, protected_numbers):
         print("  No deterministic review signals found.\n")
         return
 
+    strong = [f for f in findings if f.review_level == "strong"]
+    possible = [f for f in findings if f.review_level == "possible"]
     print(f"  {len(findings)} review signal(s) found. Nothing is selected automatically.")
-    for finding in findings:
-        joined = ", ".join(str(n) for n in finding.turns)
-        noun = "Turn" if len(finding.turns) == 1 else "Turns"
-        protected = "  [protected]" if all(n in protected_numbers for n in finding.turns) else ""
-        print(f"  - {noun} {joined}: {finding.title}.{protected}")
-        print(f"    {finding.detail}")
+
+    for label, group in (("Strong signals", strong), ("Possible signals", possible)):
+        if not group:
+            continue
+        print(f"\n  {label}")
+        for finding in group:
+            joined = ", ".join(str(n) for n in finding.turns)
+            noun = "Turn" if len(finding.turns) == 1 else "Turns"
+            protected = "  [protected]" if all(n in protected_numbers for n in finding.turns) else ""
+            print(f"  - {noun} {joined}: {finding.title}.{protected}")
+            print(f"    {finding.detail}")
     print()
 
 
