@@ -41,6 +41,13 @@ class AnalysisTests(unittest.TestCase):
         finding = next(f for f in analyze(entries, turns) if f.kind == "repeated_user_text")
         self.assertEqual(finding.turns, (1, 2))
 
+    def test_correction_marker_is_flagged_as_possible(self):
+        entries, turns = make_turns([
+            ("I already said keep the settings panel on the right.", "Got it.", None)
+        ])
+        finding = next(f for f in analyze(entries, turns) if f.kind == "correction_marker")
+        self.assertEqual(finding.review_level, "possible")
+
     def test_large_tool_result_is_flagged(self):
         payload = "x" * 5000
         entries = [
