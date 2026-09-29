@@ -1,5 +1,5 @@
 """
-Command line for Deep Clean (Tier 1).
+Command line for Deep Clean.
 
 Run after exiting Claude Code:
     python3 -m deepclean --latest
@@ -7,11 +7,11 @@ Run after exiting Claude Code:
 
 import argparse
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from deepclean import session
+from deepclean.analysis import analyze
 from deepclean.cleaner import CleanError, clean
 from deepclean.turns import split_turns
 
@@ -19,12 +19,48 @@ BATCH_SIZE = 3
 DEFAULT_PROTECT = 2
 HISTORY_FILE = Path.home() / ".deepclean" / "history.jsonl"
 
+FINDING_LABELS = {
+    "lightweight_acknowledgement": "light exchange",
+    "repeated_user_text": "repeated requirement",
+    "large_tool_output": "large tool output",
+    "duplicate_tool_output": "duplicate tool output",
+}
 
-def ask_batch(batch):
+
+def _signals_by_turn(findings):
+    signals = {}
+    for finding in findings:
+        label = FINDING_LABELS.get(finding.kind, finding.kind.replace("_", " "))
+        for number in finding.turns:
+            signals.setdefault(number, []).append(label)
+    return signals
+
+
+def show_findings(findings, protected_numbers):
+    """Explain advisory findings. Never selects or archives anything."""
+    print("Context review")
+    if not findings:
+        print("  No deterministic review signals found.\n")
+        return
+
+    print(f"  {len(findings)} review signal(s) found. Nothing is selected automatically.")
+    for finding in findings:
+        joined = ", ".join(str(n) for n in finding.turns)
+        noun = "Turn" if len(finding.turns) == 1 else "Turns"
+        protected = "  [protected]" if all(n in protected_numbers for n in finding.turns) else ""
+        print(f"  - {noun} {joined}: {finding.title}.{protected}")
+        print(f"    {finding.detail}")
+    print()
+
+
+def ask_batch(batch, signals=None):
     """Show up to 3 turns and return the numbers the user wants archived."""
+    signals = signals or {}
     allowed = {t.number for t in batch}
     for t in batch:
-        print(f"  {t.number:>3}. {t.preview}  ({t.message_count} messages)")
+        labels = signals.get(t.number, [])
+        suffix = f"  [{' / '.join(labels)}]" if labels else ""
+        print(f"  {t.number:>3}. {t.preview}  ({t.message_count} messages){suffix}")
     while True:
         answer = input("  Archive which? Type numbers (e.g. 2 3), or press Enter to keep all: ").strip()
         if not answer:
@@ -59,14 +95,21 @@ def file_size(entries):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="deepclean",
-        description="Archive parts of a Claude Code session into a cleaned copy. The original is never changed.",
+        description="Review and archive parts of a Claude Code session into a cleaned copy. The original is never changed.",
     )
     parser.add_argument("path", nargs="?", help="Path to a session .jsonl file")
     parser.add_argument("--latest", action="store_true", help="Use the most recent session")
     parser.add_argument("--protect", type=int, default=DEFAULT_PROTECT,
                         help=f"How many recent turns can never be archived (default {DEFAULT_PROTECT})")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen, write nothing")
+    parser.add_argument("--analyze-only", action="store_true",
+                        help="Show context review signals and exit without asking what to archive")
+    parser.add_argument("--no-analysis", action="store_true",
+                        help="Skip deterministic context review signals")
     args = parser.parse_args(argv)
+
+    if args.analyze_only and args.no_analysis:
+        parser.error("--analyze-only cannot be combined with --no-analysis")
 
     if args.latest:
         path = session.find_latest()
@@ -86,18 +129,30 @@ def main(argv=None):
 
     turns = split_turns(entries)
     protect = max(1, args.protect)
+    protected_numbers = {t.number for t in turns[-protect:]}
     candidates = turns[:-protect] if len(turns) > protect else []
 
     print(f"\nDeep Clean  |  {path.name}")
     print(f"{len(turns)} turns. The last {min(protect, len(turns))} are protected.\n")
+
+    findings = [] if args.no_analysis else analyze(entries, turns)
+    if not args.no_analysis:
+        show_findings(findings, protected_numbers)
+
+    if args.analyze_only:
+        print("Analysis only: nothing was changed.")
+        return 0
+
     if not candidates:
         print("Nothing to clean yet.")
         return 0
 
+    signals = _signals_by_turn(findings)
+
     try:
         chosen = []
         for i in range(0, len(candidates), BATCH_SIZE):
-            chosen += ask_batch(candidates[i:i + BATCH_SIZE])
+            chosen += ask_batch(candidates[i:i + BATCH_SIZE], signals)
             print()
 
         if not chosen:
@@ -131,7 +186,7 @@ def main(argv=None):
     record(path, new_path, chosen)
 
     folder = session.working_folder(entries)
-    print(f"\nDone. Your original session is untouched.")
+    print("\nDone. Your original session is untouched.")
     print("Continue in the cleaned copy with:")
     if folder:
         print(f'  cd "{folder}" && claude --resume {new_id}')
