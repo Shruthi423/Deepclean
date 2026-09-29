@@ -7,6 +7,7 @@ person decide what may no longer deserve active context.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 from deepclean.context_graph import build_context_graph
 from deepclean.findings import Finding
@@ -90,6 +91,40 @@ def detect_repeated_user_text(session: NormalizedSession):
     return findings
 
 
+def detect_near_duplicate_user_text(session: NormalizedSession, threshold=0.88):
+    """Find highly similar substantive prompts without claiming semantic equivalence."""
+    candidates = []
+    for turn in session.turns:
+        text = _normalize(turn.user_text)
+        if len(text) >= 40:
+            candidates.append((turn.number, text))
+
+    findings = []
+    seen_pairs = set()
+    for i, (left_number, left_text) in enumerate(candidates):
+        for right_number, right_text in candidates[i + 1:]:
+            if left_text == right_text:
+                continue
+            score = SequenceMatcher(None, left_text, right_text).ratio()
+            if score < threshold:
+                continue
+            pair = (left_number, right_number)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            findings.append(
+                Finding(
+                    kind="near_duplicate_user_text",
+                    turns=pair,
+                    title="Possible re-explanation",
+                    detail=f"These user messages are very similar ({score:.0%} textual similarity). Review whether they repeat the same requirement.",
+                    confidence=0.80,
+                    mechanical=False,
+                )
+            )
+    return findings
+
+
 def detect_correction_markers(session: NormalizedSession):
     """Find explicit language that often signals context loss or correction loops."""
     findings = []
@@ -165,6 +200,7 @@ def analyze(entries, turns):
     detectors = (
         detect_lightweight_acknowledgements,
         detect_repeated_user_text,
+        detect_near_duplicate_user_text,
         detect_correction_markers,
         detect_large_tool_results,
         detect_duplicate_tool_results,
