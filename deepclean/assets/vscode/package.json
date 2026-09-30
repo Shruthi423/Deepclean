@@ -1,0 +1,40 @@
+{
+  "name": "deepclean-context",
+  "displayName": "Deep Clean Context",
+  "description": "Analyze and clean Claude Code and Codex session context from VS Code.",
+  "version": "0.2.0",
+  "publisher": "shruthi423",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:deepclean.analyzeClaude",
+    "onCommand:deepclean.cleanClaude",
+    "onCommand:deepclean.analyzeCodex",
+    "onCommand:deepclean.cleanCodex"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "deepclean.analyzeClaude",
+        "title": "Deep Clean: Analyze Latest Claude Session"
+      },
+      {
+        "command": "deepclean.cleanClaude",
+        "title": "Deep Clean: Clean Latest Claude Session"
+      },
+      {
+        "command": "deepclean.analyzeCodex",
+        "title": "Deep Clean: Analyze Latest Codex Session"
+      },
+      {
+        "command": "deepclean.cleanCodex",
+        "title": "Deep Clean: Clean Latest Codex Session"
+      }
+    ]
+  }
+}
