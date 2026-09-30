@@ -273,10 +273,65 @@ def _check_choices(turns, archive_numbers, protect_last, protected_numbers=None)
             raise CodexFormatError(f"Turn {number} is protected.")
 
 
+def _runs(numbers):
+    runs = []
+    for n in sorted(numbers):
+        if runs and n == runs[-1][-1] + 1:
+            runs[-1].append(n)
+        else:
+            runs.append([n])
+    return runs
+
+
+def _gap_note(run):
+    count = len(run)
+    noun = "turn" if count == 1 else "turns"
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "developer",
+            "content": [{
+                "type": "input_text",
+                "text": f"[Deep Clean note: the user archived {count} earlier {noun} from active context. Ask the user if details are needed.]",
+            }],
+        },
+    }
+
+
+def check_tool_pairs(entries):
+    seen = set()
+    open_calls = set()
+
+    for entry in entries:
+        payload = _response_payload(entry)
+        if entry.get("type") != "response_item":
+            continue
+        kind = payload.get("type")
+
+        if kind == "message" and payload.get("role") == "user" and open_calls:
+            raise CodexFormatError("A Codex tool call would be left without its result.")
+
+        if kind in {"function_call", "custom_tool_call"}:
+            call_id = payload.get("call_id") or payload.get("id")
+            if call_id:
+                seen.add(str(call_id))
+                open_calls.add(str(call_id))
+        elif kind in {"function_call_output", "custom_tool_call_output"}:
+            call_id = payload.get("call_id") or payload.get("id")
+            if not call_id or str(call_id) not in seen:
+                raise CodexFormatError("A Codex tool result would be left without its call.")
+            open_calls.discard(str(call_id))
+
+    if open_calls:
+        raise CodexFormatError("A Codex tool call at the end of the session has no result.")
+
+
 def clean(entries, turns, archive_numbers, protect_last, protected_numbers=None, new_session_id=None):
-    """Return a cleaned Codex rollout copy with a fresh thread id."""
+    """Return a cleaned Codex rollout copy with a fresh thread id and gap notes."""
     _check_choices(turns, archive_numbers, protect_last, protected_numbers)
-    cleaned = copy.deepcopy(entries)
+    original = copy.deepcopy(entries)
     remove = set()
 
     by_number = {t.number: t for t in turns}
@@ -284,7 +339,18 @@ def clean(entries, turns, archive_numbers, protect_last, protected_numbers=None,
         turn = by_number[number]
         remove.update(range(turn.start, turn.end))
 
-    cleaned = [entry for i, entry in enumerate(cleaned) if i not in remove]
+    notes = {}
+    for run in _runs(archive_numbers):
+        first = by_number[run[0]]
+        notes[first.start] = _gap_note(run)
+
+    cleaned = []
+    for i, entry in enumerate(original):
+        if i in notes:
+            cleaned.append(notes[i])
+        if i in remove:
+            continue
+        cleaned.append(entry)
     if not cleaned or cleaned[0].get("type") != "session_meta":
         raise CodexFormatError("Cleaning would remove Codex session metadata.")
 
@@ -306,6 +372,7 @@ def clean(entries, turns, archive_numbers, protect_last, protected_numbers=None,
             entry["ordinal"] = ordinal
 
     check_format(cleaned)
+    check_tool_pairs(cleaned)
     return cleaned, new_id
 
 
