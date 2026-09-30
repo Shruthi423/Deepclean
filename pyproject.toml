@@ -28,3 +28,11 @@ deepclean = "deepclean.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["deepclean*"]
+
+[tool.setuptools.package-data]
+deepclean = [
+  "assets/claude/*.md",
+  "assets/vscode/package.json",
+  "assets/vscode/*.js",
+  "assets/vscode/*.md",
+]
