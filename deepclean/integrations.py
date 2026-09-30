@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 from importlib import resources
 from pathlib import Path
 
