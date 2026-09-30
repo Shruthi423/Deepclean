@@ -31,6 +31,10 @@ KNOWN_RECORD_TYPES = {
     "inter_agent_communication",
     "inter_agent_communication_metadata",
     "realtime_item",
+    "token_usage_record",
+    "world_state",
+    "retained_context",
+    "security_risk_score",
 }
 
 
