@@ -76,9 +76,16 @@ def unpin(project, index, path=PINS_FILE):
 
 
 def protected_turn_numbers(normalized_session, project, path=PINS_FILE):
-    pinned_texts = {item.get("text", "") for item in list_pins(project, path)}
+    items = list_pins(project, path)
+    pinned_texts = {item.get("text", "") for item in items}
+    source_turns = {
+        item.get("source_turn")
+        for item in items
+        if isinstance(item.get("source_turn"), int)
+    }
     return {
         turn.number
         for turn in normalized_session.turns
-        if " ".join(turn.user_text.split()) in pinned_texts
+        if turn.number in source_turns
+        or " ".join(turn.user_text.split()) in pinned_texts
     }
