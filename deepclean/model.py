@@ -42,6 +42,7 @@ class NormalizedTurn:
     tool_uses: tuple[ToolUse, ...] = ()
     tool_results: tuple[ToolResult, ...] = ()
     char_count: int = 0
+    timestamp: str | None = None
 
     @property
     def has_tool_activity(self) -> bool:
@@ -106,6 +107,11 @@ def normalize(entries, turns: list[Turn] | tuple[Turn, ...]) -> NormalizedSessio
                         )
                     )
 
+        timestamp = next(
+            (entry.get("timestamp") for entry in segment if isinstance(entry.get("timestamp"), str)),
+            None,
+        )
+
         char_count = sum(
             len(json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str))
             for entry in segment
@@ -123,6 +129,7 @@ def normalize(entries, turns: list[Turn] | tuple[Turn, ...]) -> NormalizedSessio
                 tool_uses=tuple(tool_uses),
                 tool_results=tuple(tool_results),
                 char_count=char_count,
+                timestamp=timestamp,
             )
         )
 
