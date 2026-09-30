@@ -95,9 +95,9 @@ def _polarity(text: str) -> int:
     wrapped = f" {_normalize(text)} "
     negative = any(marker in wrapped for marker in NEGATIVE_MARKERS)
     positive = any(marker in wrapped for marker in POSITIVE_MARKERS)
-    if negative and not positive:
+    if negative:
         return -1
-    if positive and not negative:
+    if positive:
         return 1
     return 0
 
