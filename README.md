@@ -1,195 +1,215 @@
 # 🧹 Deep Clean
 
-**Remove the clutter from a long Claude Code session, without losing anything.**
+**Human-controlled context cleanup for long Claude Code and Codex sessions.**
 
-When a Claude Code session runs for a long time, it fills up with side
-conversations, old drafts, and finished tasks. Claude has to reread all of it
-with every message, and answers can get less focused.
+Deep Clean reviews a coding-agent session for context that may have lost value,
+shows the evidence, and lets the user decide what stays in active context.
+It never overwrites the original session.
 
-Deep Clean lets you pick which parts of a session to set aside. You then
-continue in a cleaned copy of the session. Your original session is never
-changed, so you can always go back.
+> **Status: beta (v0.3.0).** Deep Clean writes cleaned copies only and fails
+> closed when a session format is unfamiliar.
 
-> **Status: early version.** It works and has been tested, but it relies on
-> Claude Code's session files, whose format is not officially documented.
-> Your original sessions are never modified, so trying it is safe.
+## What it detects
 
----
+Deep Clean currently surfaces:
 
-## How it works, in one minute
+- repeated and highly similar requirements
+- possible correction loops
+- possible conflicting requirements
+- possible superseded decisions
+- stale file reads when a file changed after the agent read it
+- large and duplicate tool output
+- lightweight acknowledgement exchanges
+- conflicts with user-pinned source-of-truth requirements
 
-1. You end a Claude Code session as usual.
-2. You run Deep Clean. It shows your session as a numbered list of **turns**.
-   A turn is one message you sent, plus everything Claude did in response.
-3. You type the numbers of the turns you no longer need.
-4. Deep Clean makes a **cleaned copy** of the session without those turns. In
-   their place it leaves a short note, so Claude knows something was there.
-5. You continue working in the cleaned copy.
-
-🔒 Nothing is deleted. Your original session stays exactly as it was.
-
----
-
-## Before you start
-
-You need:
-
-- A Mac or Linux computer
-- **Claude Code**, installed and working
-- **Python 3.10 or newer.** To check, open Terminal and run `python3 --version`
-
-You do **not** need an API key, an account, or any extra software.
-Claude Code keeps using your normal Claude plan.
-
----
+Higher-level findings are **review signals**, not automatic deletion decisions.
 
 ## Install
 
-Open Terminal and run:
+Requires Python 3.10+.
 
 ```bash
-cd ~
 git clone https://github.com/Shruthi423/Deepclean.git
 cd Deepclean
+python -m pip install .
 ```
 
-That's it. There is nothing else to install.
-
----
-
-## Use it
-
-### Step 1: Find your session ID
-
-When you leave Claude Code with `/exit`, it prints a line like this:
-
-```
-Resume this session with:
-claude --resume d1c4ccea-1993-4415-b48e-26201e0e6df4
-```
-
-The long code at the end is your **session ID**. Copy it.
-
-### Step 2: Run Deep Clean on that session
-
-In Terminal, go to the Deep Clean folder and run this command, replacing
-`YOUR-SESSION-ID` with the ID you copied:
+Verify:
 
 ```bash
-cd ~/Deepclean
-python3 -m deepclean "$(find ~/.claude/projects -name 'YOUR-SESSION-ID.jsonl')"
+deepclean --version
 ```
 
-### Step 3: Choose what to set aside
+## Claude Code
 
-Deep Clean shows your turns three at a time:
+Analyze the latest Claude Code session:
 
-```
-Deep Clean  |  d1c4ccea-1993-4415-b48e-26201e0e6df4.jsonl
-7 turns. The last 2 are protected.
-
-    1. Remember this rule for this session: every answer must en...  (2 messages)
-    2. Create a file called notes.txt with the line "hello deep ...  (4 messages)
-    3. what's a good serif font for a portfolio?  (2 messages)
-  Archive which? Type numbers (e.g. 2 3), or press Enter to keep all:
+```bash
+deepclean --provider claude --latest --analyze-only
 ```
 
-- Type the numbers of turns you don't need, then press **Enter**.
-- To keep everything in a group, just press **Enter**.
-- Your most recent turns are **protected** and are never shown here.
+Analyze and interactively clean:
 
-When you're done, Deep Clean asks you to confirm. Type `y` and press **Enter**.
-
-### Step 4: Continue in the cleaned copy
-
-Deep Clean prints a command like this:
-
-```
-cd "/Users/you/my-project" && claude --resume a0876963-770f-4ea5-bccb-d9e1f046c148
+```bash
+deepclean --provider claude --latest
 ```
 
-Copy and run it. Claude Code opens the cleaned session, and you carry on
-working.
+Install the Claude Code slash command:
 
-### Changed your mind?
+```bash
+deepclean --install-claude-command
+```
 
-Resume your **original** session instead, using the session ID from Step 1.
-It is untouched. Deep Clean also keeps a record of every clean in
-`~/.deepclean/history.jsonl`, so you can always find the original.
+Restart Claude Code, then use:
 
----
+```text
+/deepclean
+```
 
-## Options
+The slash command analyzes the live session. Deep Clean does **not** rewrite a
+session while Claude Code is actively using it. To clean, exit Claude Code,
+run the CLI, then use the printed `claude --resume ...` command.
+
+## Codex
+
+Deep Clean supports current Codex rollout JSONL files under
+`~/.codex/sessions/YYYY/MM/DD/` (or `$CODEX_HOME/sessions/`).
+
+Analyze:
+
+```bash
+deepclean --provider codex --latest --analyze-only
+```
+
+Analyze and clean:
+
+```bash
+deepclean --provider codex --latest
+```
+
+After cleaning, Deep Clean prints:
+
+```bash
+codex resume <new-session-id>
+```
+
+The original rollout is never modified.
+
+## VS Code
+
+Install the lightweight local VS Code integration:
+
+```bash
+deepclean --install-vscode
+```
+
+Restart VS Code. In the Command Palette, search **Deep Clean**.
+
+Available commands:
+
+- Deep Clean: Analyze Latest Claude Session
+- Deep Clean: Clean Latest Claude Session
+- Deep Clean: Analyze Latest Codex Session
+- Deep Clean: Clean Latest Codex Session
+
+The extension runs Deep Clean in VS Code's integrated terminal, so cleanup
+remains visible and interactive.
+
+## Source-of-truth pins
+
+Pin a session turn so it cannot be archived:
+
+```bash
+deepclean --provider claude --latest --pin 12
+```
+
+Or pin explicit project guidance:
+
+```bash
+deepclean --provider claude --latest --pin-text "The settings panel stays on the right."
+```
+
+List pins:
+
+```bash
+deepclean --provider claude --latest --list-pins
+```
+
+Remove pin 2:
+
+```bash
+deepclean --provider claude --latest --unpin 2
+```
+
+Pinned requirements are treated as project source of truth and are protected
+from cleanup. Deep Clean also flags later turns that appear to conflict with
+them.
+
+## Common options
 
 | Command | What it does |
 |---|---|
-| `python3 -m deepclean PATH` | Clean the session file at PATH (recommended) |
-| `python3 -m deepclean --latest` | Clean the most recently used session. ⚠️ **Careful:** this may pick a different session than you expect |
-| `--protect 5` | Protect the last 5 turns instead of the default 2 |
-| `--dry-run` | Show what would happen without writing anything |
+| `--provider claude` | Read Claude Code sessions |
+| `--provider codex` | Read Codex rollout sessions |
+| `--latest` | Use the provider's most recent session |
+| `--analyze-only` | Show findings and change nothing |
+| `--protect 5` | Protect the five most recent turns |
+| `--dry-run` | Preview cleanup without writing a new session |
+| `--no-analysis` | Use manual cleanup without review signals |
+| `--pin TURN` | Pin that turn as project source of truth |
+| `--pin-text TEXT` | Pin explicit project guidance |
+| `--list-pins` | List project pins |
+| `--unpin N` | Remove pin N |
 
----
+## Safety rules
 
-## 🛡️ Safety rules
+1. **The original session is never overwritten.**
+2. **Only user-selected turns are archived.**
+3. **Recent and pinned turns are protected.**
+4. **Whole turns are removed so tool calls and results stay together.**
+5. **Gap notes mark archived sections.**
+6. **Cleaned copies get fresh session IDs.**
+7. **Tool-call integrity is validated before a copy is written.**
+8. **Unknown Claude/Codex session formats fail closed.**
 
-Deep Clean follows these rules every time:
+## Architecture
 
-1. **Only what you choose is set aside.** Nothing is removed automatically.
-2. **Your most recent turns are protected** and can never be set aside.
-3. **Whole turns only.** If Claude used a tool, the request and its result
-   always stay together, so the session never breaks.
-4. **A note marks every gap,** so Claude knows earlier conversation existed.
-5. **Your original session is never changed.** The cleaned version is always
-   a new copy.
-6. **Every copy is checked before it's saved.** If something looks wrong,
-   nothing is written.
-7. **If a session file looks unfamiliar,** Deep Clean stops and changes
-   nothing.
-
----
-
-## ⚠️ Known limitations
-
-- **Claude Code only.** It does not work with claude.ai or other chat apps.
-- **You run it after exiting** Claude Code, not from inside a session (yet).
-- **The note appears inside your next message** in the session history, so
-  you may see text you didn't type.
-- **The size shown is the file size,** which includes Claude Code's own
-  records. The real saving in what Claude reads is usually larger.
-- **Claude Code updates** could change the session format. If Deep Clean
-  suddenly stops working after an update, that is the likely reason.
-
----
-
-## What's inside the code
-
-Deep Clean is plain Python with no outside packages. Each file has one job:
-
-| File | What it does |
-|---|---|
-| `deepclean/session.py` | Reads session files, checks they look right, and saves the cleaned copy safely (never overwriting anything) |
-| `deepclean/turns.py` | Splits a session into turns: each message you sent plus Claude's response |
-| `deepclean/cleaner.py` | Builds the cleaned copy: removes chosen turns, adds the notes, and enforces the safety rules |
-| `deepclean/cli.py` | The interactive part you see in Terminal: shows turns, asks questions, prints the resume command |
-| `tests/test_cleaner.py` | Automated tests, one or more for each safety rule |
-| `tools/inspect_session.py` | A read-only helper that shows what's inside a session file, for debugging |
-
-### Run the tests
-
-```bash
-cd ~/Deepclean
-python3 -m unittest discover tests
+```text
+Claude JSONL / Codex rollout
+            ↓
+      provider adapter
+            ↓
+ normalized Deep Clean model
+            ↓
+       context graph
+            ↓
+ deterministic + advisory detectors
+            ↓
+ findings + source-of-truth pins
+            ↓
+         user review
+            ↓
+ provider-specific safe cleaner
+            ↓
+ verified NEW session
 ```
 
-You should see `OK` at the end.
+## Tests
 
----
+```bash
+python -m unittest discover -s tests -v
+```
 
-## Coming next
+GitHub Actions runs the suite on Python 3.10, 3.11, and 3.12.
 
-- Run `/deepclean` from inside Claude Code, so it always cleans the session
-  you're in
-- Pin up to 5 important messages so they're never set aside
-- Restore set-aside turns from inside a session
-- Measure what Claude actually reads, not just file size
-- Gentle suggestions when a session is getting long or drifting off topic
+## Current limitations
+
+- Claude Code's local session schema is not officially documented, so Deep
+  Clean validates expected structure and stops on unfamiliar shapes.
+- Codex support targets the current rollout record families
+  (`session_meta`, `response_item`, `turn_context`, `event_msg`, etc.).
+- Contradiction and supersession detection is intentionally conservative and
+  advisory. Deep Clean does not decide which conflicting requirement is right.
+- The VS Code integration is a lightweight Command Palette wrapper around the
+  CLI, not a custom visual review panel yet.
+- Deep Clean does not rewrite live sessions underneath Claude Code or Codex.

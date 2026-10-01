@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Deep Clean - Phase 1 experiment: inspect a Claude Code session file.
+Deep Clean session inspector.
 
-READ-ONLY. This script never changes, moves, or deletes anything.
-It prints the structure of one session file so we can learn its format
-before writing the cleaner.
+READ-ONLY. This debugging helper never changes, moves, or deletes anything.
+It prints the structure of a Claude Code session file so maintainers can inspect
+session-format changes safely.
 
 Usage:
     python3 inspect_session.py --latest          # newest session on this Mac
     python3 inspect_session.py path/to/file.jsonl
 
-Only run it on a throwaway TEST session. The output shows short previews
-of message text.
+The output includes short previews of message text, so use it only on sessions
+you are comfortable displaying in your terminal.
 """
 
 import argparse

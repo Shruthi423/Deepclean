@@ -8,3 +8,8 @@ __pycache__/
 
 # Never commit real session files
 *.jsonl
+
+# Packaging
+build/
+dist/
+*.egg-info/
