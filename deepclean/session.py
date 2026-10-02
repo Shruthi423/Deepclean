@@ -11,6 +11,7 @@ Deep Clean stops and changes nothing.
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -58,6 +59,34 @@ def check_format(entries):
             raise SessionFormatError(
                 "A message line has no 'message.content'. The session format may have changed."
             )
+
+
+def find_by_id(session_id, projects_dir=PROJECTS_DIR):
+    """Return the one Claude session whose filename exactly matches session_id.
+
+    This resolves by filename only. It does not open or inspect unrelated
+    session files.
+    """
+    value = str(session_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value):
+        raise SessionFormatError("Invalid Claude session ID.")
+
+    projects_dir = Path(projects_dir)
+    if not projects_dir.exists():
+        return None
+
+    matches = [
+        path
+        for path in projects_dir.glob(f"*/{value}.jsonl")
+        if path.is_file()
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise SessionFormatError(
+            f"Multiple Claude sessions match ID {value}. Choose a session file explicitly."
+        )
+    return matches[0]
 
 
 def find_latest(projects_dir=PROJECTS_DIR):
