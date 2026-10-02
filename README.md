@@ -6,7 +6,7 @@ Deep Clean reviews a coding-agent session for context that may have lost value,
 shows the evidence, and lets the user decide what stays in active context.
 It never overwrites the original session.
 
-> **Status: beta (v0.3.0).** Deep Clean writes cleaned copies only and fails
+> **Status: beta (v0.3.1).** Deep Clean writes cleaned copies only and fails
 > closed when a session format is unfamiliar.
 
 ## What it detects
@@ -66,9 +66,16 @@ Restart Claude Code, then use:
 /deepclean
 ```
 
-The slash command analyzes the live session. Deep Clean does **not** rewrite a
-session while Claude Code is actively using it. To clean, exit Claude Code,
-run the CLI, then use the printed `claude --resume ...` command.
+The slash command targets the **exact active Claude Code session** using
+Claude Code's current session ID. It does not choose the most recently modified
+session and does not inspect unrelated session contents.
+
+Deep Clean does **not** rewrite a session while Claude Code is actively using it.
+To clean, exit Claude Code and run Deep Clean with that exact session ID, then
+use the printed `claude --resume ...` command.
+
+To work on a different session, explicitly provide that session's JSONL path or
+session ID.
 
 ## Codex
 
@@ -151,7 +158,8 @@ them.
 |---|---|
 | `--provider claude` | Read Claude Code sessions |
 | `--provider codex` | Read Codex rollout sessions |
-| `--latest` | Use the provider's most recent session |
+| `--session-id ID` | Use one exact Claude Code session ID |
+| `--latest` | Explicitly use the provider's most recent session |
 | `--analyze-only` | Show findings and change nothing |
 | `--protect 5` | Protect the five most recent turns |
 | `--dry-run` | Preview cleanup without writing a new session |
@@ -213,3 +221,4 @@ GitHub Actions runs the suite on Python 3.10, 3.11, and 3.12.
 - The VS Code integration is a lightweight Command Palette wrapper around the
   CLI, not a custom visual review panel yet.
 - Deep Clean does not rewrite live sessions underneath Claude Code or Codex.
+- `/deepclean` targets the exact active Claude session. `--latest` remains an explicit CLI-only choice.
