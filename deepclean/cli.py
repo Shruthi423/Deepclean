@@ -162,6 +162,8 @@ def main(argv=None):
     parser.add_argument("--provider", choices=("claude", "codex"), default="claude",
                         help="Session provider (default: claude)")
     parser.add_argument("--latest", action="store_true", help="Use the provider's most recent session")
+    parser.add_argument("--session-id", metavar="ID",
+                        help="Use this exact Claude Code session ID")
     parser.add_argument("--protect", type=int, default=DEFAULT_PROTECT,
                         help=f"How many recent turns can never be archived (default {DEFAULT_PROTECT})")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen, write nothing")
@@ -200,7 +202,22 @@ def main(argv=None):
 
     api = _provider_api(args.provider)
 
-    if args.latest:
+    selectors = int(bool(args.path)) + int(args.latest) + int(bool(args.session_id))
+    if selectors > 1:
+        parser.error("choose only one session source: PATH, --session-id, or --latest")
+
+    if args.session_id:
+        if args.provider != "claude":
+            parser.error("--session-id currently applies only to Claude Code")
+        try:
+            path = session.find_by_id(args.session_id)
+        except session.SessionFormatError as err:
+            print(f"Could not select the session: {err}\nNothing was changed.")
+            return 1
+        if path is None:
+            print(f"No Claude Code session found with ID {args.session_id}.")
+            return 1
+    elif args.latest:
         path = api["find_latest"]()
         if path is None:
             print(f"No {args.provider} sessions found.")
@@ -208,7 +225,7 @@ def main(argv=None):
     elif args.path:
         path = Path(args.path).expanduser()
     else:
-        parser.error("give a session file path, use --latest, or install an integration")
+        parser.error("give a session file path, --session-id, use --latest, or install an integration")
 
     try:
         entries = api["load"](path)
