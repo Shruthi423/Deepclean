@@ -2,7 +2,7 @@
   "name": "deepclean-context",
   "displayName": "Deep Clean Context",
   "description": "Analyze and clean Claude Code and Codex session context from VS Code.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "shruthi423",
   "engines": {
     "vscode": "^1.85.0"
