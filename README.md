@@ -1,4 +1,4 @@
-# 🧹 Deep Clean
+# Deep Clean
 
 **Human-controlled context cleanup for long Claude Code and Codex sessions.**
 
