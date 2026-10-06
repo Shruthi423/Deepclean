@@ -10,6 +10,64 @@ It never overwrites the original session.
 > **Status: beta (v0.3.1).** Deep Clean writes cleaned copies only and stops
 > when it encounters a session format it does not understand.
 
+## Quick start
+
+### 1. Install
+
+```bash
+git clone https://github.com/Shruthi423/Deepclean.git
+cd Deepclean
+python3 -m pip install .
+```
+
+Verify:
+
+```bash
+deepclean --version
+```
+
+### 2. Try it inside Claude Code
+
+Install the slash command:
+
+```bash
+deepclean --install-claude-command
+```
+
+Restart Claude Code, then run:
+
+```text
+/deepclean
+```
+
+This analyzes the **exact Claude session you are currently using** and shows review signals. It does not modify the live session.
+
+### 3. Or use the CLI independently
+
+Analyze the latest Claude session:
+
+```bash
+deepclean --provider claude --latest --analyze-only
+```
+
+Preview cleanup without writing anything:
+
+```bash
+deepclean --provider claude --latest --dry-run
+```
+
+Clean after exiting the active Claude session:
+
+```bash
+deepclean --provider claude --latest
+```
+
+Deep Clean creates a **new cleaned session**, leaves the original untouched, and prints the command to resume the cleaned copy.
+
+> New here? Start with `--analyze-only`. It is read-only.
+
+---
+
 ## What Deep Clean does
 
 Deep Clean can surface:
