@@ -83,8 +83,9 @@ def _normalize(text: str) -> str:
 def _tokens(text: str) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-z0-9_./-]{2,}", _normalize(text))
-        if token not in STOPWORDS
+        for token in re.findall(r"[a-z0-9_]+(?:[./-][a-z0-9_]+)*", _normalize(text))
+        if len(token) >= 2
+        and token not in STOPWORDS
     }
 
 
