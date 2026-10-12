@@ -267,14 +267,16 @@ def main(argv=None):
     protect = max(1, args.protect)
     recent_protected = {t.number for t in turns[-protect:]}
     pinned_protected = protected_turn_numbers(normalized, project)
-    protected_numbers = recent_protected | pinned_protected
+    structural_protected = {t.number for t in turns if not t.archivable}
+    protected_numbers = recent_protected | pinned_protected | structural_protected
 
     candidates = [t for t in turns if t.number not in protected_numbers]
 
     print(f"\nDeep Clean ({args.provider})  |  {Path(path).name}")
     print(
-        f"{len(turns)} turns. {len(protected_numbers)} protected "
-        f"({len(recent_protected)} recent, {len(pinned_protected)} pinned).\n"
+        f"{len(turns)} active turns. {len(protected_numbers)} protected "
+        f"({len(recent_protected)} recent, {len(pinned_protected)} pinned, "
+        f"{len(structural_protected)} structural).\n"
     )
 
     pin_items = list_pins(project)
