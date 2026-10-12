@@ -4,11 +4,10 @@ import copy
 import uuid
 
 from deepclean.turns import (
+    active_conversation_indices,
     is_synthetic_user_entry,
     is_turn_start,
-    message_text,
     preview,
-    split_turns,
     turn_indices,
 )
 
@@ -71,52 +70,52 @@ def _prepend_text(entry, text):
         raise CleanError("Could not attach the stub note to the next message.")
 
 
-def _turn_map(entries):
-    mapping = {}
-    for turn in split_turns(entries):
-        for index in turn_indices(turn):
-            mapping[index] = turn.number
-    return mapping
-
-
 def check_tool_pairs(entries):
-    """Validate tool call/result pairs in the active context only."""
-    active_turn = _turn_map(entries)
-    active_indexes = set(active_turn)
+    """Validate tool call/result integrity on the active conversation branch.
+
+    This intentionally validates raw active conversation records rather than
+    only successfully parsed turns. That way malformed orphan calls/results
+    are still caught instead of disappearing from the validator.
+    """
+    active_indexes = set(active_conversation_indices(entries))
     open_calls = {}
     seen_calls = set()
+    current_turn = 0
 
     for index, entry in enumerate(entries):
         if index not in active_indexes:
             continue
+
+        if entry.get("type") == "user" and is_turn_start(entry):
+            current_turn += 1
+            if open_calls:
+                call_id, source_turn = next(iter(open_calls.items()))
+                raise CleanError(
+                    f"Tool call {call_id!r} in turn {source_turn or '?'} has no result "
+                    f"before turn {current_turn}."
+                )
+
         content = entry.get("message", {}).get("content") if entry.get("type") in REMOVABLE_TYPES else None
         blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-        turn_number = active_turn.get(index)
-
-        if entry.get("type") == "user" and is_turn_start(entry) and open_calls:
-            call_id, source_turn = next(iter(open_calls.items()))
-            raise CleanError(
-                f"Tool call {call_id!r} in turn {source_turn} has no result before turn {turn_number}."
-            )
 
         for block in blocks:
             if block.get("type") == "tool_use" and block.get("id"):
                 call_id = str(block["id"])
-                open_calls[call_id] = turn_number
+                open_calls[call_id] = current_turn or 1
                 seen_calls.add(call_id)
             elif block.get("type") == "tool_result":
                 call_id = block.get("tool_use_id")
                 call_id = str(call_id) if call_id is not None else ""
                 if not call_id or call_id not in seen_calls:
                     raise CleanError(
-                        f"Tool result {call_id or '<missing id>'!r} in turn {turn_number} has no matching call."
+                        f"Tool result {call_id or '<missing id>'!r} in turn "
+                        f"{current_turn or 1} has no matching call."
                     )
                 open_calls.pop(call_id, None)
 
     if open_calls:
         call_id, source_turn = next(iter(open_calls.items()))
-        raise CleanError(f"Tool call {call_id!r} in turn {source_turn} has no result.")
-
+        raise CleanError(f"Tool call {call_id!r} in turn {source_turn or 1} has no result.")
 
 def clean(entries, turns, archive_numbers, protect_last, new_session_id=None):
     """Return (cleaned_entries, new_session_id). The input list is not modified."""
