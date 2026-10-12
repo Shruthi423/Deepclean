@@ -15,7 +15,7 @@ from deepclean.analysis import analyze_session
 from deepclean.cleaner import CleanError, clean as clean_claude
 from deepclean.integrations import install_claude_command, install_vscode_extension
 from deepclean.model import normalize as normalize_claude
-from deepclean.pins import list_pins, pin, protected_turn_numbers, unpin
+from deepclean.pins import PinsError, list_pins, pin, protected_turn_numbers, unpin
 from deepclean.turns import split_turns as split_claude_turns
 
 BATCH_SIZE = 3
@@ -136,8 +136,15 @@ def _provider_api(provider):
     }
 
 
-def _project_key(folder, path):
-    return str(Path(folder).expanduser()) if folder else str(Path(path).parent)
+def _project_key(folder, path, provider):
+    if folder:
+        try:
+            return str(Path(folder).expanduser().resolve())
+        except OSError:
+            return str(Path(folder).expanduser())
+    if provider == "codex":
+        return None
+    return str(Path(path).parent)
 
 
 def _show_pins(project):
@@ -218,9 +225,9 @@ def main(argv=None):
             print(f"No Claude Code session found with ID {args.session_id}.")
             return 1
     elif args.latest:
-        path = api["find_latest"]()
+        path = api["find_latest"](cwd=Path.cwd())
         if path is None:
-            print(f"No {args.provider} sessions found.")
+            print(f"No usable {args.provider} session found for the current project: {Path.cwd()}")
             return 1
     elif args.path:
         path = Path(args.path).expanduser()
@@ -236,37 +243,58 @@ def main(argv=None):
     turns = api["split_turns"](entries)
     normalized = api["normalize"](entries, turns)
     folder = api["working_folder"](entries)
-    project = _project_key(folder, path)
+    project = _project_key(folder, path, args.provider)
 
-    if args.list_pins:
-        _show_pins(project)
-        return 0
-
-    if args.unpin:
-        if unpin(project, args.unpin):
-            print(f"Removed pin {args.unpin}.")
-            return 0
-        print(f"Pin {args.unpin} does not exist.")
+    pin_action_requested = (
+        args.list_pins
+        or args.unpin is not None
+        or args.pin_text is not None
+        or args.pin is not None
+    )
+    if project is None and pin_action_requested:
+        print(
+            "Pins are unavailable because this Codex rollout does not record a stable project cwd. "
+            "Nothing was changed."
+        )
         return 1
 
-    if args.pin_text:
-        created = pin(project, args.pin_text)
-        print("Pinned." if created else "That source-of-truth requirement is already pinned.")
-        return 0
+    try:
+        if args.list_pins:
+            _show_pins(project)
+            return 0
 
-    if args.pin is not None:
-        try:
-            turn = normalized.turn(args.pin)
-        except KeyError:
-            print(f"Turn {args.pin} does not exist.")
+        if args.unpin is not None:
+            if unpin(project, args.unpin):
+                print(f"Removed pin {args.unpin}.")
+                return 0
+            print(f"Pin {args.unpin} does not exist.")
             return 1
-        created = pin(project, turn.user_text, source_turn=turn.number)
-        print("Pinned." if created else "That turn is already pinned.")
-        return 0
+
+        if args.pin_text:
+            created = pin(project, args.pin_text)
+            print("Pinned." if created else "That source-of-truth requirement is already pinned.")
+            return 0
+
+        if args.pin is not None:
+            try:
+                turn = normalized.turn(args.pin)
+            except KeyError:
+                print(f"Turn {args.pin} does not exist.")
+                return 1
+            created = pin(project, turn.user_text, source_turn=turn.number)
+            print("Pinned." if created else "That turn is already pinned.")
+            return 0
+    except PinsError as err:
+        print(f"Could not use pins safely: {err}\nNothing was changed.")
+        return 1
 
     protect = max(1, args.protect)
     recent_protected = {t.number for t in turns[-protect:]}
-    pinned_protected = protected_turn_numbers(normalized, project)
+    try:
+        pinned_protected = protected_turn_numbers(normalized, project) if project is not None else set()
+    except PinsError as err:
+        print(f"Could not use pins safely: {err}\nNothing was changed.")
+        return 1
     structural_protected = {t.number for t in turns if not t.archivable}
     protected_numbers = recent_protected | pinned_protected | structural_protected
 
@@ -279,7 +307,11 @@ def main(argv=None):
         f"{len(structural_protected)} structural).\n"
     )
 
-    pin_items = list_pins(project)
+    try:
+        pin_items = list_pins(project) if project is not None else []
+    except PinsError as err:
+        print(f"Could not use pins safely: {err}\nNothing was changed.")
+        return 1
     pinned_texts = [item.get("text", "") for item in pin_items]
 
     findings = []
@@ -327,9 +359,13 @@ def main(argv=None):
 
         before, after = file_size(entries), file_size(cleaned)
         print(f"Archiving turns: {' '.join(map(str, chosen))}")
+        print(f"Active turns: {len(turns)} -> {len(turns) - len(chosen)} ({len(chosen)} archived)")
         change = 100 * (after - before) / before
         direction = "smaller" if change < 0 else "larger"
-        print(f"Session size: {before:,} -> {after:,} characters ({abs(change):.1f}% {direction})")
+        print(
+            f"Session file size: {before:,} -> {after:,} characters "
+            f"({abs(change):.1f}% {direction}; this is file size, not token savings)"
+        )
 
         if args.dry_run:
             print("Dry run: nothing was written.")
