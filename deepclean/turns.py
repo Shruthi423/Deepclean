@@ -179,13 +179,18 @@ def _apply_compaction_boundary(entries, active_indices):
     return [i for i in active_indices if i > boundary]
 
 
+def active_conversation_indices(entries):
+    """Exact conversation indexes on the branch/context Claude can currently see."""
+    return _apply_compaction_boundary(entries, _active_conversation_indices(entries))
+
+
 def split_turns(entries):
     """Return active-context turns in order.
 
     Abandoned branches and pre-compaction history are omitted. Compact summaries
     remain visible but are marked unarchivable.
     """
-    active = _apply_compaction_boundary(entries, _active_conversation_indices(entries))
+    active = active_conversation_indices(entries)
     start_positions = [pos for pos, i in enumerate(active) if is_turn_start(entries[i])]
     turns = []
 
