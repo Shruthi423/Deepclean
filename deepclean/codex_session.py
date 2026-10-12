@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -276,10 +277,34 @@ def normalize(entries, turns):
     return NormalizedSession(turns=tuple(normalized), metadata={"provider": "codex"})
 
 def working_folder(entries):
+    """Return a stable project cwd when Codex records one.
+
+    Prefer session metadata, then turn_context, then the injected
+    <environment_context> block. Returning None is safer than pretending the
+    YYYY/MM/DD session storage folder is the project.
+    """
     payload = entries[0].get("payload", {})
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else payload
     cwd = meta.get("cwd") if isinstance(meta, dict) else None
-    return str(cwd) if cwd else None
+    if isinstance(cwd, str) and cwd.strip():
+        return cwd.strip()
+
+    for entry in entries:
+        if entry.get("type") == "turn_context":
+            payload = entry.get("payload")
+            if isinstance(payload, dict):
+                cwd = payload.get("cwd")
+                if isinstance(cwd, str) and cwd.strip():
+                    return cwd.strip()
+
+    for entry in entries:
+        if not _is_protected_context_message(entry):
+            continue
+        text = _message_text(entry)
+        match = re.search(r"<cwd>\s*(.*?)\s*</cwd>", text, flags=re.IGNORECASE | re.DOTALL)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
 
 
 def session_id(entries):
