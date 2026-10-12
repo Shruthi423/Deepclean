@@ -1,28 +1,18 @@
-"""
-Building a cleaned copy of a session.
-
-Rules enforced here:
-  1. Only turns the user chose are archived.
-  2. The last few turns are protected and can never be archived.
-  3. Whole turns are archived, so a tool call never loses its result.
-  4. A short stub replaces each archived stretch, so Claude knows something
-     was there.
-  5. The copy gets a new session id and new line ids. The original file is
-     never touched, which makes every clean reversible.
-  6. Before anything is written, the copy is checked. If a check fails,
-     nothing is written.
-"""
+"""Build a safe cleaned copy of a Claude Code session."""
 
 import copy
 import uuid
 
-from deepclean.turns import message_text, preview
+from deepclean.turns import (
+    is_synthetic_user_entry,
+    is_turn_start,
+    message_text,
+    preview,
+    split_turns,
+    turn_indices,
+)
 
-# Only conversation lines are removed. Other line types (snapshots, summaries,
-# system notes) are kept, with their references updated.
 REMOVABLE_TYPES = {"user", "assistant"}
-
-# Fields that point at another line's uuid.
 REFERENCE_FIELDS = ("parentUuid", "leafUuid", "logicalParentUuid", "messageId")
 
 
@@ -31,7 +21,6 @@ class CleanError(Exception):
 
 
 def build_stub(archived_turns):
-    """The note Claude sees in place of archived turns."""
     starts = "; ".join(f'"{t.preview}"' for t in archived_turns)
     count = len(archived_turns)
     noun = "exchange" if count == 1 else "exchanges"
@@ -49,15 +38,19 @@ def _check_choices(turns, archive_numbers, protect_last):
         raise CleanError("No turns were chosen for archiving.")
     valid = {t.number for t in turns}
     protected = {t.number for t in turns[-protect_last:]}
+    structurally_protected = {t.number for t in turns if not t.archivable}
     for number in archive_numbers:
         if number not in valid:
             raise CleanError(f"Turn {number} does not exist.")
+        if number in structurally_protected:
+            turn = next(t for t in turns if t.number == number)
+            reason = turn.protected_reason or "session structure"
+            raise CleanError(f"Turn {number} is protected ({reason}).")
         if number in protected:
             raise CleanError(f"Turn {number} is one of the last {protect_last} and is protected.")
 
 
 def _runs(numbers):
-    """Group sorted numbers into consecutive runs: [2,3,5] -> [[2,3],[5]]."""
     runs = []
     for n in sorted(numbers):
         if runs and n == runs[-1][-1] + 1:
@@ -78,61 +71,79 @@ def _prepend_text(entry, text):
         raise CleanError("Could not attach the stub note to the next message.")
 
 
-def check_tool_pairs(entries):
-    """
-    Every tool result must follow its tool call, and every tool call must get
-    a result before the user's next message. Otherwise Claude would reject
-    the session.
-    """
-    from deepclean.turns import is_turn_start
+def _turn_map(entries):
+    mapping = {}
+    for turn in split_turns(entries):
+        for index in turn_indices(turn):
+            mapping[index] = turn.number
+    return mapping
 
-    open_calls = set()
+
+def check_tool_pairs(entries):
+    """Validate tool call/result pairs in the active context only."""
+    active_turn = _turn_map(entries)
+    active_indexes = set(active_turn)
+    open_calls = {}
     seen_calls = set()
-    for entry in entries:
+
+    for index, entry in enumerate(entries):
+        if index not in active_indexes:
+            continue
         content = entry.get("message", {}).get("content") if entry.get("type") in REMOVABLE_TYPES else None
         blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+        turn_number = active_turn.get(index)
 
         if entry.get("type") == "user" and is_turn_start(entry) and open_calls:
-            raise CleanError("A tool call would be left without its result.")
+            call_id, source_turn = next(iter(open_calls.items()))
+            raise CleanError(
+                f"Tool call {call_id!r} in turn {source_turn} has no result before turn {turn_number}."
+            )
 
         for block in blocks:
             if block.get("type") == "tool_use" and block.get("id"):
-                open_calls.add(block["id"])
-                seen_calls.add(block["id"])
+                call_id = str(block["id"])
+                open_calls[call_id] = turn_number
+                seen_calls.add(call_id)
             elif block.get("type") == "tool_result":
                 call_id = block.get("tool_use_id")
-                if call_id not in seen_calls:
-                    raise CleanError("A tool result would be left without its tool call.")
-                open_calls.discard(call_id)
+                call_id = str(call_id) if call_id is not None else ""
+                if not call_id or call_id not in seen_calls:
+                    raise CleanError(
+                        f"Tool result {call_id or '<missing id>'!r} in turn {turn_number} has no matching call."
+                    )
+                open_calls.pop(call_id, None)
 
     if open_calls:
-        raise CleanError("A tool call at the end of the session has no result.")
+        call_id, source_turn = next(iter(open_calls.items()))
+        raise CleanError(f"Tool call {call_id!r} in turn {source_turn} has no result.")
 
 
 def clean(entries, turns, archive_numbers, protect_last, new_session_id=None):
-    """
-    Return (cleaned_entries, new_session_id). The input list is not modified.
-    """
+    """Return (cleaned_entries, new_session_id). The input list is not modified."""
     _check_choices(turns, archive_numbers, protect_last)
     new_session_id = new_session_id or str(uuid.uuid4())
     by_number = {t.number: t for t in turns}
 
-    # Which lines go.
     remove = set()
     for number in archive_numbers:
         turn = by_number[number]
-        for i in range(turn.start, turn.end):
-            if entries[i].get("type") in REMOVABLE_TYPES:
-                remove.add(i)
+        for i in turn_indices(turn):
+            entry = entries[i]
+            if entry.get("type") not in REMOVABLE_TYPES:
+                continue
+            if is_synthetic_user_entry(entry):
+                continue
+            remove.add(i)
+
     removed_ids = {entries[i]["uuid"] for i in remove if entries[i].get("uuid")}
 
-    # Where each stub goes: the first line of the turn right after each run.
     stubs = {}
     for run in _runs(archive_numbers):
-        next_turn = by_number[run[-1] + 1]  # exists, because the last turn is protected
+        next_turn = by_number.get(run[-1] + 1)
+        if next_turn is None:
+            raise CleanError("Cleaning would archive the final active turn.")
         stubs[next_turn.start] = build_stub([by_number[n] for n in run])
 
-    # A removed line's children must attach to its nearest kept ancestor.
     parent_of = {e["uuid"]: e.get("parentUuid") for e in entries if e.get("uuid")}
 
     def nearest_kept(line_id):
@@ -144,7 +155,6 @@ def clean(entries, turns, archive_numbers, protect_last, new_session_id=None):
             line_id = parent_of.get(line_id)
         return line_id
 
-    # Fresh ids for the copy, so it never collides with the original.
     new_ids = {
         e["uuid"]: str(uuid.uuid4())
         for i, e in enumerate(entries)
