@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deepclean-context"
 version = "0.4.0"
-description = "Human-reviewed context cleanup for long Claude Code sessions."
+description = "Human-reviewed context cleanup for long Claude Code and Codex sessions."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
   { name = "Shruthi Aragonda" }
 ]
 dependencies = []
-keywords = ["claude-code", "context", "llm", "developer-tools"]
+keywords = ["claude-code", "codex", "context", "llm", "developer-tools"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
