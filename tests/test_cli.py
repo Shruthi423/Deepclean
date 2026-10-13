@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from deepclean.cli import parse_turn_selection, resume_command
+from deepclean.cli import main, parse_turn_selection, resume_command
 
 
 class CliTests(unittest.TestCase):
@@ -33,6 +33,9 @@ class CliTests(unittest.TestCase):
     def test_parse_turn_selection_rejects_reverse_range(self):
         with self.assertRaises(ValueError):
             parse_turn_selection("8-3", set(range(1, 10)))
+
+    def test_literal_claude_session_variable_fails_safely(self):
+        self.assertEqual(main(["--session-id", "${CLAUDE_SESSION_ID}"]), 1)
 
 
 if __name__ == "__main__":
