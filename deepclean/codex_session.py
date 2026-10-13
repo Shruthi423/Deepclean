@@ -8,16 +8,16 @@ incomplete shapes fail closed.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from deepclean.model import NormalizedSession, NormalizedTurn, ToolResult, ToolUse
-from deepclean.turns import Turn, preview
+from deepclean.turns import Turn, preview, turn_indices
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 SESSIONS_DIR = CODEX_HOME / "sessions"
@@ -36,6 +36,13 @@ KNOWN_RECORD_TYPES = {
     "retained_context",
     "security_risk_score",
 }
+
+_PROTECTED_USER_PREFIXES = (
+    "<user_instructions>",
+    "<environment_context>",
+    "<developer_instructions>",
+    "<system_instructions>",
+)
 
 
 class CodexFormatError(Exception):
@@ -79,7 +86,7 @@ def check_format(entries):
         )
 
     if not any(_is_user_message(e) for e in entries):
-        raise CodexFormatError("No user response_item messages found.")
+        raise CodexFormatError("No human user response_item messages found.")
 
 
 def find_latest(sessions_dir=SESSIONS_DIR):
@@ -95,13 +102,26 @@ def _response_payload(entry):
     return payload if isinstance(payload, dict) else {}
 
 
-def _is_user_message(entry):
+def _is_raw_user_message(entry):
     payload = _response_payload(entry)
     return (
         entry.get("type") == "response_item"
         and payload.get("type") == "message"
         and payload.get("role") == "user"
     )
+
+
+def _is_protected_context_message(entry):
+    """Injected project/environment context must never be treated as a user turn."""
+    if not _is_raw_user_message(entry):
+        return False
+    text = _message_text(entry).lstrip().casefold()
+    return any(text.startswith(prefix) for prefix in _PROTECTED_USER_PREFIXES)
+
+
+def _is_user_message(entry):
+    """True only for a human Codex user prompt."""
+    return _is_raw_user_message(entry) and not _is_protected_context_message(entry)
 
 
 def _message_text(entry):
@@ -119,16 +139,24 @@ def _message_text(entry):
     return " ".join(parts).strip()
 
 
+def _last_compaction_index(entries):
+    indexes = [i for i, entry in enumerate(entries) if entry.get("type") == "compacted"]
+    return indexes[-1] if indexes else -1
+
+
 def split_turns(entries):
-    """Split Codex rollout records into whole user turns."""
-    user_indexes = [i for i, entry in enumerate(entries) if _is_user_message(entry)]
+    """Split the active Codex context into human turns."""
+    compacted_at = _last_compaction_index(entries)
+    user_indexes = [
+        i for i, entry in enumerate(entries)
+        if i > compacted_at and _is_user_message(entry)
+    ]
     turns = []
 
     for k, user_index in enumerate(user_indexes):
-        lower_bound = user_indexes[k - 1] + 1 if k else 1
+        lower_bound = max(compacted_at + 1, user_indexes[k - 1] + 1 if k else 1)
         start = user_index
 
-        # Include the latest turn_context immediately preceding this user turn.
         for i in range(user_index - 1, lower_bound - 1, -1):
             if entries[i].get("type") == "turn_context":
                 start = i
@@ -139,8 +167,6 @@ def split_turns(entries):
         next_user = user_indexes[k + 1] if k + 1 < len(user_indexes) else len(entries)
         end = next_user
         if k + 1 < len(user_indexes):
-            # If the next user has a turn_context before it, that context belongs
-            # to the next turn rather than this one.
             for i in range(next_user - 1, user_index, -1):
                 if entries[i].get("type") == "turn_context":
                     end = i
@@ -148,32 +174,39 @@ def split_turns(entries):
                 if _is_user_message(entries[i]):
                     break
 
-        segment = entries[start:end]
+        indices = tuple(
+            i for i in range(start, end)
+            if not _is_protected_context_message(entries[i])
+            and entries[i].get("type") != "compacted"
+        )
+        if not indices:
+            continue
         count = sum(
-            1
-            for e in segment
-            if e.get("type") == "response_item"
-            and _response_payload(e).get("type") == "message"
+            1 for i in indices
+            if entries[i].get("type") == "response_item"
+            and _response_payload(entries[i]).get("type") == "message"
+            and not _is_protected_context_message(entries[i])
         )
         turns.append(
             Turn(
-                number=k + 1,
-                start=start,
-                end=end,
+                number=len(turns) + 1,
+                start=indices[0],
+                end=indices[-1] + 1,
                 preview=preview(_message_text(entries[user_index])),
                 message_count=count,
+                indices=indices,
             )
         )
     return turns
 
-
 def normalize(entries, turns):
     normalized = []
     for turn in turns:
-        segment = entries[turn.start : turn.end]
+        indices = turn_indices(turn)
+        segment = [entries[i] for i in indices]
         user_entry = next((e for e in segment if _is_user_message(e)), None)
         if user_entry is None:
-            raise CodexFormatError(f"Turn {turn.number} has no user message.")
+            raise CodexFormatError(f"Turn {turn.number} has no human user message.")
 
         assistant_texts = []
         tool_uses = []
@@ -204,7 +237,6 @@ def normalize(entries, turns):
                 if call_id:
                     content = payload.get("output")
                     raw = json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
-                    import hashlib
                     tool_results.append(
                         ToolResult(
                             tool_use_id=str(call_id),
@@ -236,11 +268,12 @@ def normalize(entries, turns):
                 tool_results=tuple(tool_results),
                 char_count=char_count,
                 timestamp=timestamp,
+                archivable=turn.archivable,
+                protected_reason=turn.protected_reason,
             )
         )
 
     return NormalizedSession(turns=tuple(normalized), metadata={"provider": "codex"})
-
 
 def working_folder(entries):
     payload = entries[0].get("payload", {})
@@ -265,6 +298,7 @@ def _check_choices(turns, archive_numbers, protect_last, protected_numbers=None)
     valid = {t.number for t in turns}
     protected = {t.number for t in turns[-protect_last:]}
     protected.update(protected_numbers or set())
+    protected.update(t.number for t in turns if not t.archivable)
 
     for number in archive_numbers:
         if number not in valid:
@@ -300,33 +334,51 @@ def _gap_note(run):
     }
 
 
+def _turn_map(entries):
+    mapping = {}
+    for turn in split_turns(entries):
+        for index in turn_indices(turn):
+            mapping[index] = turn.number
+    return mapping
+
+
 def check_tool_pairs(entries):
+    turn_map = _turn_map(entries)
+    active_indexes = set(turn_map)
     seen = set()
-    open_calls = set()
+    open_calls = {}
 
-    for entry in entries:
-        payload = _response_payload(entry)
-        if entry.get("type") != "response_item":
+    for index, entry in enumerate(entries):
+        if index not in active_indexes or entry.get("type") != "response_item":
             continue
+        payload = _response_payload(entry)
         kind = payload.get("type")
+        turn_number = turn_map.get(index)
 
-        if kind == "message" and payload.get("role") == "user" and open_calls:
-            raise CodexFormatError("A Codex tool call would be left without its result.")
+        if kind == "message" and _is_user_message(entry) and open_calls:
+            call_id, source_turn = next(iter(open_calls.items()))
+            raise CodexFormatError(
+                f"Codex tool call {call_id!r} in turn {source_turn} has no result before turn {turn_number}."
+            )
 
         if kind in {"function_call", "custom_tool_call"}:
             call_id = payload.get("call_id") or payload.get("id")
             if call_id:
-                seen.add(str(call_id))
-                open_calls.add(str(call_id))
+                call_id = str(call_id)
+                seen.add(call_id)
+                open_calls[call_id] = turn_number
         elif kind in {"function_call_output", "custom_tool_call_output"}:
             call_id = payload.get("call_id") or payload.get("id")
-            if not call_id or str(call_id) not in seen:
-                raise CodexFormatError("A Codex tool result would be left without its call.")
-            open_calls.discard(str(call_id))
+            call_id = str(call_id) if call_id is not None else ""
+            if not call_id or call_id not in seen:
+                raise CodexFormatError(
+                    f"Codex tool result {call_id or '<missing id>'!r} in turn {turn_number} has no matching call."
+                )
+            open_calls.pop(call_id, None)
 
     if open_calls:
-        raise CodexFormatError("A Codex tool call at the end of the session has no result.")
-
+        call_id, source_turn = next(iter(open_calls.items()))
+        raise CodexFormatError(f"Codex tool call {call_id!r} in turn {source_turn} has no result.")
 
 def clean(entries, turns, archive_numbers, protect_last, protected_numbers=None, new_session_id=None):
     """Return a cleaned Codex rollout copy with a fresh thread id and gap notes."""
@@ -337,7 +389,13 @@ def clean(entries, turns, archive_numbers, protect_last, protected_numbers=None,
     by_number = {t.number: t for t in turns}
     for number in archive_numbers:
         turn = by_number[number]
-        remove.update(range(turn.start, turn.end))
+        remove.update(turn_indices(turn))
+
+    remove = {
+        i for i in remove
+        if not _is_protected_context_message(original[i])
+        and original[i].get("type") != "compacted"
+    }
 
     notes = {}
     for run in _runs(archive_numbers):

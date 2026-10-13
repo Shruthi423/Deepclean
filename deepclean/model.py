@@ -1,9 +1,4 @@
-"""Vendor-neutral internal representation of an AI coding session.
-
-Claude Code JSONL is an input format, not Deep Clean's domain model. Keeping a
-small normalized model here lets analysis evolve without coupling every
-detector to Anthropic's private session schema.
-"""
+"""Vendor-neutral internal representation of an AI coding session."""
 
 from __future__ import annotations
 
@@ -12,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from deepclean.turns import Turn, message_text
+from deepclean.turns import Turn, message_text, turn_indices
 
 
 @dataclass(frozen=True)
@@ -43,6 +38,8 @@ class NormalizedTurn:
     tool_results: tuple[ToolResult, ...] = ()
     char_count: int = 0
     timestamp: str | None = None
+    archivable: bool = True
+    protected_reason: str | None = None
 
     @property
     def has_tool_activity(self) -> bool:
@@ -71,11 +68,12 @@ def _stable_payload(payload):
 
 
 def normalize(entries, turns: list[Turn] | tuple[Turn, ...]) -> NormalizedSession:
-    """Convert parsed vendor entries into Deep Clean's internal representation."""
+    """Convert parsed Claude entries into Deep Clean's internal representation."""
     normalized = []
 
     for turn in turns:
-        segment = entries[turn.start : turn.end]
+        indexes = turn_indices(turn)
+        segment = [entries[i] for i in indexes]
         user_text = message_text(entries[turn.start]).strip()
         assistant_text = " ".join(
             message_text(entry)
@@ -111,7 +109,6 @@ def normalize(entries, turns: list[Turn] | tuple[Turn, ...]) -> NormalizedSessio
             (entry.get("timestamp") for entry in segment if isinstance(entry.get("timestamp"), str)),
             None,
         )
-
         char_count = sum(
             len(json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str))
             for entry in segment
@@ -130,7 +127,9 @@ def normalize(entries, turns: list[Turn] | tuple[Turn, ...]) -> NormalizedSessio
                 tool_results=tuple(tool_results),
                 char_count=char_count,
                 timestamp=timestamp,
+                archivable=turn.archivable,
+                protected_reason=turn.protected_reason,
             )
         )
 
-    return NormalizedSession(turns=tuple(normalized))
+    return NormalizedSession(turns=tuple(normalized), metadata={"provider": "claude"})
