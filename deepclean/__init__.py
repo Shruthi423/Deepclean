@@ -1,3 +1,3 @@
-"""Deep Clean: user-reviewed, reversible cleaning for Claude Code sessions."""
+"""Deep Clean: user-reviewed, reversible cleaning for Claude Code and Codex sessions."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

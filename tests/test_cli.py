@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from deepclean.cli import resume_command
+from deepclean.cli import main, parse_turn_selection, resume_command
 
 
 class CliTests(unittest.TestCase):
@@ -19,6 +19,23 @@ class CliTests(unittest.TestCase):
 
     def test_resume_without_folder(self):
         self.assertEqual(resume_command(None, "session-1"), "claude --resume session-1")
+
+    def test_parse_turn_selection_supports_ranges(self):
+        self.assertEqual(
+            parse_turn_selection("2,4-6 9", set(range(1, 11))),
+            [2, 4, 5, 6, 9],
+        )
+
+    def test_parse_turn_selection_rejects_missing_turns(self):
+        with self.assertRaises(ValueError):
+            parse_turn_selection("2-12", set(range(1, 6)))
+
+    def test_parse_turn_selection_rejects_reverse_range(self):
+        with self.assertRaises(ValueError):
+            parse_turn_selection("8-3", set(range(1, 10)))
+
+    def test_literal_claude_session_variable_fails_safely(self):
+        self.assertEqual(main(["--session-id", "${CLAUDE_SESSION_ID}"]), 1)
 
 
 if __name__ == "__main__":
