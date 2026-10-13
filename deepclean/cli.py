@@ -68,6 +68,34 @@ def show_findings(findings, protected_numbers):
     print()
 
 
+def parse_turn_selection(spec, valid_numbers):
+    """Parse turn selections like "2,4-7 10" into sorted unique turn numbers."""
+    valid = set(valid_numbers)
+    picked = set()
+    raw = str(spec or "").replace(",", " ").split()
+    if not raw:
+        return []
+
+    for token in raw:
+        if "-" in token:
+            parts = token.split("-", 1)
+            if len(parts) != 2 or not all(part.isdigit() for part in parts):
+                raise ValueError(f"Invalid range: {token}")
+            start, end = map(int, parts)
+            if start > end:
+                raise ValueError(f"Range must go low-to-high: {token}")
+            picked.update(range(start, end + 1))
+        else:
+            if not token.isdigit():
+                raise ValueError(f"Invalid turn number: {token}")
+            picked.add(int(token))
+
+    missing = sorted(picked - valid)
+    if missing:
+        raise ValueError("Turn(s) do not exist: " + ", ".join(map(str, missing)))
+    return sorted(picked)
+
+
 def ask_batch(batch, signals=None):
     signals = signals or {}
     allowed = {t.number for t in batch}
@@ -76,18 +104,21 @@ def ask_batch(batch, signals=None):
         suffix = f"  [{' / '.join(labels)}]" if labels else ""
         print(f"  {t.number:>3}. {t.preview}  ({t.message_count} messages){suffix}")
     while True:
-        answer = input("  Archive which? Type numbers (e.g. 2 3), or press Enter to keep all: ").strip()
+        answer = input(
+            "  Archive which? Type numbers/ranges (e.g. 2 3 or 2-3), "
+            "'all', or Enter to keep all: "
+        ).strip().lower()
         if not answer:
             return []
+        if answer == "all":
+            return sorted(allowed)
         try:
-            picked = {int(x) for x in answer.replace(",", " ").split()}
-        except ValueError:
-            print("  Please type numbers only.")
-            continue
-        if not picked <= allowed:
+            picked = parse_turn_selection(answer, allowed)
+        except ValueError as err:
+            print(f"  {err}")
             print(f"  Please pick from: {' '.join(str(n) for n in sorted(allowed))}")
             continue
-        return sorted(picked)
+        return picked
 
 
 def record(original, cleaned_path, archived, provider):
@@ -178,6 +209,10 @@ def main(argv=None):
                         help="Show context review signals and exit")
     parser.add_argument("--no-analysis", action="store_true",
                         help="Skip advisory context analysis")
+    parser.add_argument("--archive", metavar="TURNS",
+                        help='Archive explicit turns/ranges, e.g. "2,4-12"')
+    parser.add_argument("--archive-flagged", action="store_true",
+                        help="Archive every unprotected turn with a review signal")
     parser.add_argument("--pin", type=int, metavar="TURN",
                         help="Pin a turn's user message as project source of truth")
     parser.add_argument("--pin-text", metavar="TEXT",
@@ -206,6 +241,12 @@ def main(argv=None):
 
     if args.analyze_only and args.no_analysis:
         parser.error("--analyze-only cannot be combined with --no-analysis")
+    if args.archive and args.archive_flagged:
+        parser.error("--archive and --archive-flagged cannot be combined")
+    if args.archive_flagged and args.no_analysis:
+        parser.error("--archive-flagged requires analysis")
+    if args.analyze_only and (args.archive or args.archive_flagged):
+        parser.error("--analyze-only cannot be combined with archive selection")
 
     api = _provider_api(args.provider)
 
@@ -216,6 +257,12 @@ def main(argv=None):
     if args.session_id:
         if args.provider != "claude":
             parser.error("--session-id currently applies only to Claude Code")
+        if "CLAUDE_SESSION_ID" in str(args.session_id):
+            print(
+                "Claude Code did not expand CLAUDE_SESSION_ID for /deepclean. "
+                "Nothing was changed. Update/reinstall the command integration, then try again."
+            )
+            return 1
         try:
             path = session.find_by_id(args.session_id)
         except session.SessionFormatError as err:
@@ -334,17 +381,37 @@ def main(argv=None):
     signals = _signals_by_turn(findings)
 
     try:
-        chosen = []
-        for i in range(0, len(candidates), BATCH_SIZE):
-            chosen += ask_batch(candidates[i:i + BATCH_SIZE], signals)
-            print()
+        valid_numbers = {t.number for t in turns}
+        candidate_numbers = {t.number for t in candidates}
+
+        if args.archive:
+            try:
+                chosen = parse_turn_selection(args.archive, valid_numbers)
+            except ValueError as err:
+                raise CleanError(str(err)) from err
+        elif args.archive_flagged:
+            flagged = {
+                number
+                for finding in findings
+                for number in finding.turns
+            }
+            chosen = sorted(flagged & candidate_numbers)
+        else:
+            chosen = []
+            for i in range(0, len(candidates), BATCH_SIZE):
+                chosen += ask_batch(candidates[i:i + BATCH_SIZE], signals)
+                print()
 
         if not chosen:
             print("Nothing archived. Nothing was changed.")
             return 0
 
-        if any(number in protected_numbers for number in chosen):
-            raise CleanError("A protected or pinned turn was selected.")
+        protected_chosen = sorted(set(chosen) & protected_numbers)
+        if protected_chosen:
+            raise CleanError(
+                "Protected turn(s) cannot be archived: "
+                + ", ".join(map(str, protected_chosen))
+            )
 
         if args.provider == "codex":
             cleaned, new_id = codex_session.clean(
@@ -360,6 +427,13 @@ def main(argv=None):
         before, after = file_size(entries), file_size(cleaned)
         print(f"Archiving turns: {' '.join(map(str, chosen))}")
         print(f"Active turns: {len(turns)} -> {len(turns) - len(chosen)} ({len(chosen)} archived)")
+        print(
+            f"Protected turns preserved: {len(protected_numbers)} "
+            f"({len(recent_protected)} recent, {len(pinned_protected)} pinned, "
+            f"{len(structural_protected)} structural)"
+        )
+        if any(t.protected_reason == "compact summary" for t in turns):
+            print("Compact summary: protected")
         change = 100 * (after - before) / before
         direction = "smaller" if change < 0 else "larger"
         print(
