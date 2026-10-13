@@ -89,13 +89,45 @@ def find_by_id(session_id, projects_dir=PROJECTS_DIR):
     return matches[0]
 
 
-def find_latest(projects_dir=PROJECTS_DIR):
-    """Return the most recently changed session file, or None."""
+def _same_folder(left, right):
+    if not left or not right:
+        return False
+    try:
+        return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+    except OSError:
+        return str(Path(left).expanduser()) == str(Path(right).expanduser())
+
+
+def find_latest(projects_dir=PROJECTS_DIR, cwd=None):
+    """Return the newest usable Claude session, optionally scoped to cwd.
+
+    Invalid, empty, sidechain-only, and other-project sessions are skipped.
+    When cwd is supplied, Deep Clean never falls back to another project.
+    """
+    from deepclean.turns import split_turns
+
     projects_dir = Path(projects_dir)
     if not projects_dir.exists():
         return None
-    files = [p for p in projects_dir.glob("*/*.jsonl") if p.is_file()]
-    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+    files = sorted(
+        (p for p in projects_dir.glob("*/*.jsonl") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in files:
+        if path.name.startswith("agent-") or "subagents" in path.parts:
+            continue
+        try:
+            entries = load(path)
+        except (OSError, SessionFormatError):
+            continue
+        if cwd is not None and not _same_folder(working_folder(entries), cwd):
+            continue
+        if not split_turns(entries):
+            continue
+        return path
+    return None
 
 
 def working_folder(entries):

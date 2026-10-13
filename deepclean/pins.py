@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 PINS_FILE = Path.home() / ".deepclean" / "pins.json"
+
+
+class PinsError(Exception):
+    """Pins storage is missing expected structure or cannot be read safely."""
 
 
 def _project_id(project):
@@ -15,21 +21,61 @@ def _project_id(project):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _empty():
+    return {"projects": {}}
+
+
+def _validate(data):
+    if not isinstance(data, dict):
+        raise PinsError("pins.json must contain a JSON object.")
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        raise PinsError("pins.json has no valid 'projects' object.")
+
+    for key, record in projects.items():
+        if not isinstance(key, str) or not isinstance(record, dict):
+            raise PinsError("pins.json contains an invalid project record.")
+        pins = record.get("pins", [])
+        if not isinstance(pins, list):
+            raise PinsError("pins.json contains an invalid pins list.")
+        for item in pins:
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                raise PinsError("pins.json contains an invalid pin entry.")
+    return data
+
+
 def _load(path=PINS_FILE):
     path = Path(path)
     if not path.exists():
-        return {"projects": {}}
+        return _empty()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"projects": {}}
-    return data if isinstance(data, dict) else {"projects": {}}
+        raw = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise PinsError(f"Could not read {path}: {err}") from err
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as err:
+        raise PinsError(
+            f"{path} is corrupt JSON. Nothing was changed; repair or restore the file before using pins."
+        ) from err
+    return _validate(data)
 
 
 def _save(data, path=PINS_FILE):
+    _validate(data)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        os.replace(tmp_path, path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def list_pins(project, path=PINS_FILE):

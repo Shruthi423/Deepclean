@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -89,12 +90,37 @@ def check_format(entries):
         raise CodexFormatError("No human user response_item messages found.")
 
 
-def find_latest(sessions_dir=SESSIONS_DIR):
+def _same_folder(left, right):
+    if not left or not right:
+        return False
+    try:
+        return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+    except OSError:
+        return str(Path(left).expanduser()) == str(Path(right).expanduser())
+
+
+def find_latest(sessions_dir=SESSIONS_DIR, cwd=None):
+    """Return the newest usable Codex rollout, optionally scoped to cwd."""
     root = Path(sessions_dir)
     if not root.exists():
         return None
-    files = [p for p in root.rglob("*.jsonl") if p.is_file()]
-    return max(files, key=lambda p: p.stat().st_mtime) if files else None
+
+    files = sorted(
+        (p for p in root.rglob("*.jsonl") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for path in files:
+        try:
+            entries = load(path)
+        except (OSError, CodexFormatError):
+            continue
+        if cwd is not None and not _same_folder(working_folder(entries), cwd):
+            continue
+        if not split_turns(entries):
+            continue
+        return path
+    return None
 
 
 def _response_payload(entry):
@@ -276,10 +302,34 @@ def normalize(entries, turns):
     return NormalizedSession(turns=tuple(normalized), metadata={"provider": "codex"})
 
 def working_folder(entries):
+    """Return a stable project cwd when Codex records one.
+
+    Prefer session metadata, then turn_context, then the injected
+    <environment_context> block. Returning None is safer than pretending the
+    YYYY/MM/DD session storage folder is the project.
+    """
     payload = entries[0].get("payload", {})
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else payload
     cwd = meta.get("cwd") if isinstance(meta, dict) else None
-    return str(cwd) if cwd else None
+    if isinstance(cwd, str) and cwd.strip():
+        return cwd.strip()
+
+    for entry in entries:
+        if entry.get("type") == "turn_context":
+            payload = entry.get("payload")
+            if isinstance(payload, dict):
+                cwd = payload.get("cwd")
+                if isinstance(cwd, str) and cwd.strip():
+                    return cwd.strip()
+
+    for entry in entries:
+        if not _is_protected_context_message(entry):
+            continue
+        text = _message_text(entry)
+        match = re.search(r"<cwd>\s*(.*?)\s*</cwd>", text, flags=re.IGNORECASE | re.DOTALL)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
 
 
 def session_id(entries):
