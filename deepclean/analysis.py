@@ -6,8 +6,10 @@ signals are deliberately conservative and always require human review.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shlex
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -21,46 +23,42 @@ ACKNOWLEDGEMENTS = {
     "got it", "got it!", "sounds good", "perfect",
 }
 
-CORRECTION_MARKERS = (
-    "i already said",
-    "i told you",
-    "again",
-    "for the third time",
-    "no, i meant",
-    "that's not what i meant",
-    "that is not what i meant",
+CORRECTION_PATTERNS = (
+    (re.compile(r"\bi already said\b"), "i already said"),
+    (re.compile(r"\bi told you\b"), "i told you"),
+    (re.compile(r"\bfor the (?:second|third|fourth|fifth) time\b"), "for the nth time"),
+    (re.compile(r"\bno,? i meant\b"), "no, i meant"),
+    (re.compile(r"\b(?:that(?:'s| is)|this is) not what i meant\b"), "not what i meant"),
+    (re.compile(r"\bi asked (?:you )?to\b"), "i asked you to"),
 )
 
-SUPERSESSION_MARKERS = (
-    "instead",
-    "replace ",
-    "switch to ",
-    "switch from ",
-    "now use ",
-    "change ",
-    "use this instead",
-    "no longer ",
+SUPERSESSION_PATTERNS = (
+    (re.compile(r"\buse\s+.+?\s+instead of\s+.+"), "use … instead of …"),
+    (re.compile(r"\breplace\s+.+?\s+with\s+.+"), "replace … with …"),
+    (re.compile(r"\bswitch\s+from\s+.+?\s+to\s+.+"), "switch from … to …"),
+    (re.compile(r"\bno longer\s+.+"), "no longer …"),
+    (re.compile(r"\b(?:now|going forward)\s+use\s+.+"), "now use …"),
 )
 
-NEGATIVE_MARKERS = (
-    " don't ",
-    " do not ",
-    " shouldn't ",
-    " should not ",
-    " never ",
-    " not ",
-    " remove ",
-    " avoid ",
-    " disable ",
+NEGATIVE_PATTERNS = (
+    re.compile(r"\bdon't\b"),
+    re.compile(r"\bdo not\b"),
+    re.compile(r"\bshouldn't\b"),
+    re.compile(r"\bshould not\b"),
+    re.compile(r"\bnever\b"),
+    re.compile(r"\bnot\b"),
+    re.compile(r"\bremove\b"),
+    re.compile(r"\bavoid\b"),
+    re.compile(r"\bdisable\b"),
 )
 
-POSITIVE_MARKERS = (
-    " keep ",
-    " use ",
-    " should ",
-    " enable ",
-    " retain ",
-    " include ",
+POSITIVE_PATTERNS = (
+    re.compile(r"\bkeep\b"),
+    re.compile(r"\buse\b"),
+    re.compile(r"\bshould\b"),
+    re.compile(r"\benable\b"),
+    re.compile(r"\bretain\b"),
+    re.compile(r"\binclude\b"),
 )
 
 STOPWORDS = {
@@ -69,8 +67,14 @@ STOPWORDS = {
     "my", "our", "your", "please", "now", "just", "still", "make",
 }
 
+READ_TOOL_NAMES = {"read", "read_file", "readfile", "cat"}
+WRITE_TOOL_NAMES = {"write", "write_file", "edit", "edit_file", "apply_patch", "replace"}
+
 
 def _normalize(text: str) -> str:
+    text = str(text or "")
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
     text = text.casefold().strip()
     text = re.sub(r"\s+", " ", text)
     return text
@@ -79,8 +83,9 @@ def _normalize(text: str) -> str:
 def _tokens(text: str) -> set[str]:
     return {
         token
-        for token in re.findall(r"[a-z0-9_./-]{2,}", _normalize(text))
-        if token not in STOPWORDS
+        for token in re.findall(r"[a-z0-9_]+(?:[./-][a-z0-9_]+)*", _normalize(text))
+        if len(token) >= 2
+        and token not in STOPWORDS
     }
 
 
@@ -92,9 +97,9 @@ def _topic_similarity(left: str, right: str) -> float:
 
 
 def _polarity(text: str) -> int:
-    wrapped = f" {_normalize(text)} "
-    negative = any(marker in wrapped for marker in NEGATIVE_MARKERS)
-    positive = any(marker in wrapped for marker in POSITIVE_MARKERS)
+    normalized = _normalize(text)
+    negative = any(pattern.search(normalized) for pattern in NEGATIVE_PATTERNS)
+    positive = any(pattern.search(normalized) for pattern in POSITIVE_PATTERNS)
     if negative:
         return -1
     if positive:
@@ -175,18 +180,23 @@ def detect_correction_markers(session: NormalizedSession):
     findings = []
     for turn in session.turns:
         text = _normalize(turn.user_text)
-        matched = next((marker for marker in CORRECTION_MARKERS if marker in text), None)
-        if matched:
-            findings.append(
-                Finding(
-                    kind="correction_marker",
-                    turns=(turn.number,),
-                    title="Possible correction loop",
-                    detail=f'The user used "{matched}", which can indicate earlier context was lost or distorted.',
-                    confidence=0.85,
-                    mechanical=False,
-                )
+        match = next(
+            ((pattern, label) for pattern, label in CORRECTION_PATTERNS if pattern.search(text)),
+            None,
+        )
+        if not match:
+            continue
+        _, label = match
+        findings.append(
+            Finding(
+                kind="correction_marker",
+                turns=(turn.number,),
+                title="Possible correction loop",
+                detail=f'The user used "{label}", which can indicate earlier context was lost or distorted.',
+                confidence=0.82,
+                mechanical=False,
             )
+        )
     return findings
 
 
@@ -225,10 +235,14 @@ def detect_superseded_decisions(session: NormalizedSession, min_similarity=0.20)
 
     for index, turn in enumerate(session.turns):
         text = _normalize(turn.user_text)
-        marker = next((m for m in SUPERSESSION_MARKERS if m in text), None)
-        if not marker or index == 0:
+        match = next(
+            ((pattern, label) for pattern, label in SUPERSESSION_PATTERNS if pattern.search(text)),
+            None,
+        )
+        if not match or index == 0:
             continue
 
+        _, label = match
         best = None
         for earlier in session.turns[max(0, index - 25):index]:
             similarity = _topic_similarity(earlier.user_text, turn.user_text)
@@ -242,7 +256,7 @@ def detect_superseded_decisions(session: NormalizedSession, min_similarity=0.20)
                     kind="superseded_decision",
                     turns=(earlier.number, turn.number),
                     title="Possible superseded decision",
-                    detail=f'Turn {turn.number} uses replacement language ("{marker.strip()}") and overlaps an earlier decision. Review which version is current.',
+                    detail=f'Turn {turn.number} uses explicit replacement language ("{label}") and overlaps an earlier decision. Review which version is current.',
                     confidence=0.84,
                     mechanical=False,
                 )
@@ -259,21 +273,82 @@ def _parse_timestamp(value: str | None):
         return None
 
 
-def _read_path(tool):
-    name = tool.name.casefold()
-    if name not in {"read", "read_file", "readfile", "cat"}:
-        return None
+def _tool_input(tool):
     data = tool.input
     if isinstance(data, dict):
+        return data
+    if isinstance(data, str):
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            return {"command": data}
+        return parsed if isinstance(parsed, dict) else {"command": data}
+    return {}
+
+
+def _shell_read_path(command: str):
+    """Recognize one simple shell read without pretending to parse arbitrary shell."""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+
+    cmd = Path(parts[0]).name.casefold()
+    if cmd == "cat" and len(parts) == 2 and not parts[1].startswith("-"):
+        return parts[1]
+    if cmd in {"head", "tail"}:
+        candidates = [p for p in parts[1:] if not p.startswith("-")]
+        return candidates[-1] if len(candidates) == 1 else None
+    if cmd == "sed" and len(parts) >= 3 and not parts[-1].startswith("-"):
+        return parts[-1]
+    return None
+
+
+def _read_path(tool):
+    name = tool.name.casefold()
+    data = _tool_input(tool)
+
+    if name in READ_TOOL_NAMES:
         for key in ("file_path", "path", "filename"):
             value = data.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+
+    if name in {"bash", "shell", "shell_command", "exec_command", "command"}:
+        command = data.get("command") or data.get("cmd")
+        if isinstance(command, str):
+            return _shell_read_path(command)
     return None
 
 
+def _write_paths(turn):
+    paths = set()
+    for tool in turn.tool_uses:
+        name = tool.name.casefold()
+        data = _tool_input(tool)
+        if name not in WRITE_TOOL_NAMES:
+            continue
+        for key in ("file_path", "path", "filename"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.add(value.strip())
+    return paths
+
+
+def _resolve_path(raw_path, root):
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() and root:
+        path = root / path
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return path
+
+
 def detect_stale_file_reads(session: NormalizedSession, project_root=None):
-    """Flag files modified on disk after the turn that read them."""
+    """Flag a likely stale read, but avoid claiming certainty from filesystem mtime."""
     findings = []
     root = Path(project_root).expanduser() if project_root else None
 
@@ -282,14 +357,17 @@ def detect_stale_file_reads(session: NormalizedSession, project_root=None):
         if read_at is None:
             continue
 
+        written_this_turn = {
+            _resolve_path(raw, root)
+            for raw in _write_paths(turn)
+        }
+
         for tool in turn.tool_uses:
             raw_path = _read_path(tool)
             if not raw_path:
                 continue
-            path = Path(raw_path).expanduser()
-            if not path.is_absolute() and root:
-                path = root / path
-            if not path.is_file():
+            path = _resolve_path(raw_path, root)
+            if path in written_this_turn or not path.is_file():
                 continue
 
             try:
@@ -302,9 +380,10 @@ def detect_stale_file_reads(session: NormalizedSession, project_root=None):
                     Finding(
                         kind="stale_file_read",
                         turns=(turn.number,),
-                        title="Stale file read",
-                        detail=f"{path} changed after this turn read it. Earlier discussion may refer to an outdated file version.",
-                        confidence=0.99,
+                        title="File may have changed since this read",
+                        detail=f"{path} has a newer filesystem timestamp than this turn. Review whether the earlier discussion still reflects the current file.",
+                        confidence=0.72,
+                        mechanical=False,
                     )
                 )
     return findings
