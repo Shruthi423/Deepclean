@@ -1,32 +1,40 @@
 # Deep Clean
 
-**Human-controlled context cleanup for long Claude Code and Codex sessions.**
+**A safer way to clean up long AI coding sessions and keep the context that matters.**
 
-Deep Clean helps you review a long coding-agent session, see which parts may no longer be useful, and choose what to archive.
+Long Claude Code and Codex sessions can fill up with repeated requirements, stale decisions, old tool output, and context you no longer need. Deep Clean reviews that session and lets **you** decide what should be archived.
 
-It is designed to be conservative:
-
-- it reads session files locally
-- it does not automatically delete context
-- it protects recent, pinned, and structural context
-- it writes a new cleaned session
-- it leaves the original session untouched
+Your original session is never overwritten.
 
 > **Status: beta · v0.4.0**
 
+## The 30-second version
+
+```text
+/deepclean  →  review the current session
+exit Claude →  create a cleaned copy
+resume      →  continue from the cleaned session
+```
+
+Deep Clean reads the session file locally, protects important context, and only archives turns you explicitly choose.
+
+### What stays safe?
+
+- your original session stays untouched
+- recent context is protected
+- pinned source-of-truth context is protected
+- compact summaries and structural context are protected
+- cleanup is written as a **new session with a new ID**
+
+If you do not like the cleaned copy, you can go back to the original.
+
 ---
 
-## Quick start
+## Quick start with Claude Code
 
-### 1. Install from GitHub
+### 1. Install Deep Clean
 
-Requirements:
-
-- Python 3.10+
-- Git
-- Claude Code and/or Codex
-
-Clone and install:
+You need **Python 3.10+**, **Git**, and Claude Code.
 
 ```bash
 git clone https://github.com/Shruthi423/Deepclean.git
@@ -40,7 +48,7 @@ Windows:
 py -m pip install .
 ```
 
-Verify:
+Check that it installed:
 
 ```bash
 deepclean --version
@@ -52,7 +60,9 @@ Expected:
 deepclean 0.4.0
 ```
 
-### 2. Install the Claude Code command
+### 2. Add the `/deepclean` command
+
+Run once:
 
 ```bash
 deepclean --install-claude-command
@@ -60,15 +70,53 @@ deepclean --install-claude-command
 
 Restart Claude Code.
 
-Then, inside a Claude Code session:
+### 3. Review your current session
+
+Inside Claude Code, run:
 
 ```text
 /deepclean
 ```
 
-This analyzes the **exact active Claude session** and shows review signals.
+This reviews the active session and shows you context that may be worth cleaning.
 
-It does not clean or rewrite the live session.
+**Nothing is removed at this stage.** `/deepclean` is analysis-only.
+
+### 4. Clean the session
+
+When you are ready to clean it:
+
+1. exit the Claude Code session
+2. stay in the same project folder
+3. run:
+
+```bash
+deepclean --provider claude --latest
+```
+
+Deep Clean will show eligible turns and ask what you want to archive.
+
+When it finishes, it creates a **new cleaned session** and prints a command like:
+
+```text
+claude --resume <new-session-id>
+```
+
+Run that command to continue working from the cleaned copy.
+
+### Want to look before changing anything?
+
+Use:
+
+```bash
+deepclean --provider claude --latest --analyze-only
+```
+
+Or preview an actual cleanup without writing a new session:
+
+```bash
+deepclean --provider claude --latest --dry-run
+```
 
 ---
 
